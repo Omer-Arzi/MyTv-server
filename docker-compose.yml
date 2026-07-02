@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: my-tv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mytv
+      POSTGRES_PASSWORD: mytv
+      POSTGRES_DB: mytv
+    ports:
+      - "5433:5432"
+    volumes:
+      - my-tv-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  my-tv-postgres-data:
