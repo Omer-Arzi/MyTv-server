@@ -13,8 +13,12 @@ export interface DryRunReportMeta {
 // summary. Each candidate includes exactly what this task (and
 // docs/tmdb-enrichment-plan.md) asks for: MyTv series id/title, chosen TMDb
 // id/title/year, confidence score, reason breakdown, watched vs TMDb-known
-// episode count, and whether long-running/anime-like numbering risk was
-// detected.
+// episode count, whether long-running/anime-like numbering risk was
+// detected, and (docs/status-model-plan.md §7a) a preview of what
+// userStatus would become if this candidate were applied —
+// currentUserStatus/proposedUserStatusAfterEnrichment/
+// userStatusChangeReason. Preview only: nothing here is written to
+// UserSeriesProgress.
 export function buildEnrichmentReport(meta: DryRunReportMeta, result: EnrichmentDryRunResult) {
   return {
     importBatchId: result.importBatchId,
@@ -43,6 +47,9 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
       watchedEpisodeCount: c.watchedEpisodeCount,
       tmdbTotalEpisodeCount: c.tmdbTotalEpisodeCount,
       animeNumberingRiskDetected: c.animeNumberingRiskDetected,
+      currentUserStatus: c.currentUserStatus,
+      proposedUserStatusAfterEnrichment: c.proposedUserStatusAfterEnrichment,
+      userStatusChangeReason: c.userStatusChangeReason,
     })),
   };
 }
@@ -68,6 +75,9 @@ export function buildNeedsReview(result: EnrichmentDryRunResult) {
     watchedEpisodeCount: entry.watchedEpisodeCount,
     tmdbTotalEpisodeCount: entry.tmdbTotalEpisodeCount,
     animeNumberingRiskDetected: entry.animeNumberingRiskDetected,
+    currentUserStatus: entry.currentUserStatus,
+    proposedUserStatusAfterEnrichment: entry.proposedUserStatusAfterEnrichment,
+    userStatusChangeReason: entry.userStatusChangeReason,
   }));
 }
 

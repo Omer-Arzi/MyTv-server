@@ -12,7 +12,11 @@ export interface DryRunReportMeta {
 // trakt-enrichment-report.json — the auto-match candidates plus a run
 // summary. Each candidate includes exactly what docs/trakt-enrichment-plan.md
 // (and this task) asks for: MyTv series id/title, chosen Trakt id/title/year,
-// confidence score, reason breakdown, watched vs Trakt total episode count.
+// confidence score, reason breakdown, watched vs Trakt total episode count,
+// and (docs/status-model-plan.md §7a) a preview of what userStatus would
+// become if this candidate were applied — currentUserStatus/
+// proposedUserStatusAfterEnrichment/userStatusChangeReason. Preview only:
+// nothing here is written to UserSeriesProgress.
 export function buildEnrichmentReport(meta: DryRunReportMeta, result: EnrichmentDryRunResult) {
   return {
     importBatchId: result.importBatchId,
@@ -39,6 +43,10 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
       reasonBreakdown: c.chosen.reasonBreakdown,
       watchedEpisodeCount: c.watchedEpisodeCount,
       traktTotalEpisodeCount: c.traktTotalEpisodeCount,
+      // Preview-only (docs/status-model-plan.md §7a) — nothing is applied.
+      currentUserStatus: c.currentUserStatus,
+      proposedUserStatusAfterEnrichment: c.proposedUserStatusAfterEnrichment,
+      userStatusChangeReason: c.userStatusChangeReason,
     })),
   };
 }
@@ -64,6 +72,9 @@ export function buildNeedsReview(result: EnrichmentDryRunResult) {
       : null,
     watchedEpisodeCount: entry.watchedEpisodeCount,
     traktTotalEpisodeCount: entry.traktTotalEpisodeCount,
+    currentUserStatus: entry.currentUserStatus,
+    proposedUserStatusAfterEnrichment: entry.proposedUserStatusAfterEnrichment,
+    userStatusChangeReason: entry.userStatusChangeReason,
   }));
 }
 

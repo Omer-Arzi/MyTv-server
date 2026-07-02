@@ -10,10 +10,12 @@
 // which is exactly what "cache raw responses" and "produce a needs-review
 // report" require.
 
-import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient } from '@prisma/client';
+import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient, UserSeriesStatus } from '@prisma/client';
 import { TraktClient } from './trakt-client';
 import { decideTier, extractTitleYearHint, normalizeTitle, scoreCandidates, ScoreBreakdown } from './scoring';
+import { mapTraktStatusToReleaseStatus } from './release-status-mapping';
 import { TraktSearchResult, TraktSeasonWithEpisodes, TraktShowFull } from './trakt-types';
+import { proposeUserStatusAfterEnrichment } from '../src/common/derive-user-status';
 
 const BATCH_SOURCE = 'trakt-enrichment';
 
@@ -38,6 +40,11 @@ export interface AutoMatchCandidateReport {
   chosen: CandidateSummary;
   watchedEpisodeCount: number;
   traktTotalEpisodeCount: number;
+  // Preview-only (docs/status-model-plan.md §7a) — what userStatus would
+  // become if this candidate were applied, computed but never written.
+  currentUserStatus: UserSeriesStatus;
+  proposedUserStatusAfterEnrichment: UserSeriesStatus;
+  userStatusChangeReason: string;
 }
 
 export interface NeedsReviewEntry {
@@ -48,6 +55,9 @@ export interface NeedsReviewEntry {
   topCandidate: CandidateSummary | null;
   watchedEpisodeCount: number | null;
   traktTotalEpisodeCount: number | null;
+  currentUserStatus: UserSeriesStatus | null;
+  proposedUserStatusAfterEnrichment: UserSeriesStatus | null;
+  userStatusChangeReason: string | null;
 }
 
 export interface EnrichmentDryRunResult {
@@ -116,6 +126,14 @@ export async function runEnrichmentDryRun(
     watchedCountBySeriesId.set(seriesId, (watchedCountBySeriesId.get(seriesId) ?? 0) + 1);
   }
 
+  // Current userStatus per series, for the currentUserStatus/
+  // proposedUserStatusAfterEnrichment preview fields (docs/status-model-plan.md §7a).
+  const progressRows = await prisma.userSeriesProgress.findMany({
+    where: { userId: options.userId },
+    select: { seriesId: true, userStatus: true },
+  });
+  const currentUserStatusBySeriesId = new Map(progressRows.map((p) => [p.seriesId, p.userStatus]));
+
   const autoMatchCandidates: AutoMatchCandidateReport[] = [];
   const needsReview: NeedsReviewEntry[] = [];
   const issues: Prisma.ImportIssueCreateManyInput[] = [];
@@ -140,6 +158,9 @@ export async function runEnrichmentDryRun(
         topCandidate: decision.top ? toCandidateSummary(decision.top.result, decision.top.breakdown) : null,
         watchedEpisodeCount,
         traktTotalEpisodeCount: null,
+        currentUserStatus: null,
+        proposedUserStatusAfterEnrichment: null,
+        userStatusChangeReason: null,
       });
       issues.push({
         importBatchId: batch.id,
@@ -165,6 +186,14 @@ export async function runEnrichmentDryRun(
     const traktTotalEpisodeCount = sumAiredEpisodes(seasons);
     const candidateSummary = toCandidateSummary(top.result, top.breakdown, show);
 
+    const currentUserStatus = currentUserStatusBySeriesId.get(s.id) ?? UserSeriesStatus.UNKNOWN;
+    const { proposedUserStatus, reason: userStatusChangeReason } = proposeUserStatusAfterEnrichment({
+      currentUserStatus,
+      watchedEpisodeCount,
+      totalKnownEpisodeCount: traktTotalEpisodeCount,
+      candidateReleaseStatus: mapTraktStatusToReleaseStatus(show.status),
+    });
+
     let tier = decision.tier;
     let reason = decision.reason;
 
@@ -183,6 +212,9 @@ export async function runEnrichmentDryRun(
         chosen: candidateSummary,
         watchedEpisodeCount,
         traktTotalEpisodeCount,
+        currentUserStatus,
+        proposedUserStatusAfterEnrichment: proposedUserStatus,
+        userStatusChangeReason,
       });
     } else {
       needsReview.push({
@@ -193,6 +225,9 @@ export async function runEnrichmentDryRun(
         topCandidate: candidateSummary,
         watchedEpisodeCount,
         traktTotalEpisodeCount,
+        currentUserStatus,
+        proposedUserStatusAfterEnrichment: proposedUserStatus,
+        userStatusChangeReason,
       });
       issues.push({
         importBatchId: batch.id,

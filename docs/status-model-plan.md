@@ -1,6 +1,8 @@
 # Status Model Plan
 
-Design for separating "is this show still airing" (a public fact, sourced from TMDb/Trakt) from "where am I personally at with it" (a personal fact, mostly user-controlled). **Planning only — `prisma/schema.prisma` was not touched and no code was written for this pass.**
+Design for separating "is this show still airing" (a public fact, sourced from TMDb/Trakt) from "where am I personally at with it" (a personal fact, mostly user-controlled).
+
+**Status of this document:** the core model below (§3, §4, §6, §8) has been applied — `Series.releaseStatus`/`UserSeriesProgress.userStatus` exist in the schema, the TV Time importer and `markWatched` write them, and the 433 imported series have been backfilled. This revision corrects and sharpens two things that turned out to be under-specified in that first pass (both clarifications, not schema or behavior changes to what's already live): the precise TV-Time-derivable subset of `userStatus` values (see the new subsection in §4), and the exact "Haven't Watched For A While" filter (§8). It also documents the dry-run enrichment reports' new preview fields (§7a) that show what §7's not-yet-built apply step *would* do, without doing it. **No `prisma/schema.prisma` changes in this revision, and no enrichment apply step exists or was added.**
 
 ## 1. What exists today, and the actual problem
 
@@ -60,6 +62,18 @@ Replaces `ProgressStatus`/`UserSeriesProgress.status`. Each value, what it means
 | `completed` | Watched everything, and the show's `releaseStatus` is `ended`/`cancelled` — nothing more is coming, ever | **Auto-derived**, same inputs as `caught_up`, opposite `releaseStatus` condition |
 | `unknown` | A row exists but there isn't enough signal yet to classify it | System fallback — not user-settable, not provider-derived, just an honest "don't know yet" |
 
+**This table is exhaustive — these seven values are the entire stored vocabulary.** Anything that reads like a status but isn't in this list (e.g. "stale," "haven't watched in a while") is **not** a `userStatus` value and never will be — it's a *derived, computed-at-query-time filter* over these seven values plus `lastWatchedAt`, not an eighth thing to store. §8 covers this distinction in detail for Home specifically, but the principle is general: if a "status" can be recomputed identically from other columns on demand, it doesn't get its own enum value, on this project's usual bias against storing what can be derived.
+
+### TV Time alone cannot tell us `caught_up` or `currently watching` — only three of these seven values are safely TV-Time-derivable
+
+This is worth stating as its own rule, not just a caveat buried in §5's table, because getting it wrong would mean writing confident-sounding lies into `userStatus` exactly the way the old `WATCHING`-by-default bug did into `Series.status` (§1). TV Time's export gives MyTv exactly three reliable signals about personal status, and no more:
+
+- **`dropped`** — from TV Time's `is_archived` flag. A real, explicit signal: the user told TV Time they're done with this show.
+- **`watchlist`** — from TV Time's `is_for_later` flag (or a dedicated watchlist source, per `docs/tvtime-data-audit.md` §3.6). Also real and explicit.
+- **`watching`** — **not** a real signal at all, despite the name. TV Time never tells MyTv "the user is actively, currently watching this show" as a distinct fact — it only tells MyTv *that some episodes were watched*. `watching` on import is a **non-committal placeholder**: "this series has watched episodes and isn't archived," nothing more. It is deliberately the least-informative label in the enum, chosen only because MyTv has no better word for "some signal exists, but not enough to say more" without inventing an eighth value.
+
+**`caught_up` and `completed` must never be assigned from TV Time data alone, under any circumstance, no matter how the `is_archived`/`is_for_later`/watched-count signals are combined.** Both require knowing the show's *full* episode catalog (to know there's nothing left unwatched) and its `releaseStatus` (to know whether "nothing left unwatched, for now" means "caught up" or "completed, forever") — and TV Time's export contains neither. It only ever tells MyTv about episodes the user personally interacted with, never a show's complete episode list, and it has no field resembling `releaseStatus` at all (§1, §3). These two values only become derivable **after** a TMDb/Trakt enrichment pass has resolved both facts for a given series — see the new §7a below for exactly how that shows up today, ahead of any actual `userStatus` write happening.
+
 ### Does `watchlist` merge `WatchlistItem` into `UserSeriesProgress`, or stay separate?
 
 The requirement lists `watchlist` as a `userStatus` value, which means `UserSeriesProgress` needs to represent "on the watchlist, not started" as one of its states — but today `UserSeriesProgress` rows only get created once there's a watched episode (`import-tvtime/normalize-watched-episodes.ts:229-241`; the live `markWatched` path is the same), while `WatchlistItem` is created independently and can exist with zero corresponding `UserSeriesProgress` row.
@@ -102,14 +116,36 @@ One derivation function — `deriveUserStatus(nextEpisodeExists, releaseStatus)`
 3. **When `releaseStatus` transitions into `ended`/`cancelled`** for a series where `userStatus = caught_up`, flip it to `completed` (nothing more is coming, and the user had already watched everything known). Symmetrically, if a `completed` show's `releaseStatus` ever moves *back* out of `ended`/`cancelled` (a revival — rare, but real), flip `completed` back to `caught_up`. Neither direction touches `watching`/`paused`/`dropped`/`watchlist`.
 4. Same non-clobbering rule as everywhere else in this project's enrichment design: episode-level fields (`title`/`overview`/`airDate`) stay fill-if-null; only `releaseStatus` and its `userStatus` cascade are exceptions, because they're the two fields in this whole model that are expected to genuinely change over the life of a show.
 
+## 7a. What's actually implemented today: the dry-run report *previews* this cascade, without applying it
+
+§7 describes what an eventual **apply** step should do — that step doesn't exist yet (`docs/trakt-enrichment-plan.md` §8, `docs/tmdb-enrichment-plan.md` §9: both pipelines are dry-run only, no writes to `Series`/`UserSeriesProgress`). What exists today is a **preview**: `trakt-enrichment-report.json` and `tmdb-enrichment-report.json` each compute, for every candidate where the full episode catalog was fetched (`AUTO_MATCH` tier, and `NEEDS_REVIEW` entries where a top candidate was fetched), three additional fields showing *what §7's cascade would do if it ran*, without running it:
+
+- **`currentUserStatus`** — the series' actual `userStatus` right now, read directly from `UserSeriesProgress`.
+- **`proposedUserStatusAfterEnrichment`** — what `userStatus` would become if this candidate's data were applied, computed by the same rules as §6/§7 but never written anywhere:
+  - `currentUserStatus` is `dropped` or `paused` → **unchanged**. These are user intent; per §2's principle, enrichment discovering a fuller catalog never overrides them, preview or not.
+  - Nothing watched yet (`watchedEpisodeCount = 0`) → **unchanged**. A `watchlist`/`unknown` series isn't affected by learning how many episodes a show has; nothing about "have I watched anything" changed.
+  - Otherwise, compare `watchedEpisodeCount` against the newly-known total episode count: watched everything known → `completed` (if the candidate's provider status maps to `ended`/`cancelled`) or `caught_up` (otherwise); still behind → `watching`.
+- **`userStatusChangeReason`** — a human-readable sentence explaining the above, e.g. *"full episode catalog now known (24 episodes); watched 12/24 — would move to WATCHING"* or *"current status is DROPPED (user-controlled) — enrichment never overrides explicit personal status."*
+
+This is deliberately **report-only** — it answers "what would happen," it doesn't make it happen. The provider `status` string (Trakt/TMDb) is mapped to a candidate `releaseStatus` purely for this preview calculation (`trakt-enrichment/release-status-mapping.ts`, `tmdb-enrichment/release-status-mapping.ts`) and is never written to `Series.releaseStatus` by either pipeline. Same caveat as everywhere else this project has touched Trakt's `status` field: TMDb's mapping is confirmed (`docs/tmdb-enrichment-plan.md` §2), Trakt's is still provisional.
+
 ## 8. How Home sections should use these statuses
+
+**Important correction: "Haven't Watched For A While" is not, and will never be, a `userStatus` value.** It has no row in the §4 table because it isn't personal-status information at all — it's a *derived Home section*, computed at query time from `lastWatchedAt` against the seven real `userStatus` values. Calling it "the stale status" (even informally) would be wrong in the same way calling `releaseStatus`'s absence "the unknown status" would undersell that `unknown` already covers that case — staleness isn't a state a series is *in*, it's a filter condition MyTv evaluates fresh on every `/home` call. Nothing about this section writes or reads a stored "stale" flag anywhere.
 
 | Section | Query (under the new model) | Notes / behavior change from today |
 | --- | --- | --- |
 | **Watch Next** | `UserSeriesProgress WHERE userStatus = 'watching' AND nextEpisodeId IS NOT NULL`, order by `lastWatchedAt desc` | Same shape as today's query, just precise now — today's `WATCHING` filter accidentally would have included what should be `caught_up`/`paused`/`dropped` rows once those states exist; the new filter genuinely excludes them |
-| **Haven't Watched For A While** | `UserSeriesProgress WHERE userStatus = 'watching' AND lastWatchedAt < cutoff`, order by `lastWatchedAt asc` | Same query shape as today, same reasoning — but now correctly excludes `paused`/`dropped` (the user already told MyTv they know, re-nudging is noise), `caught_up`/`completed` (nothing to watch, staleness is irrelevant), and `watchlist` (never started, so "haven't watched in a while" doesn't apply) |
+| **Haven't Watched For A While** | `UserSeriesProgress WHERE userStatus IN ('watching', 'caught_up') AND lastWatchedAt < cutoff`, order by `lastWatchedAt asc` | An **include-list**, not an exclude-list, on purpose — see below |
 | **Recently Watched** | Unchanged — pure `EpisodeWatch` history, no `UserSeriesProgress`/status involvement | Worth stating explicitly: a recently-watched episode is a historical fact and shows up regardless of the series' *current* `userStatus`, even if the user dropped the show five minutes after watching it |
 | **Watchlist** | Unchanged — `WatchlistItem` for the user, ordered by `addedAt desc` (§4's recommendation to keep this table as the query source) | No behavior change; `userStatus = watchlist` on the corresponding `UserSeriesProgress` row is kept in sync but isn't what this screen queries |
+
+**"Haven't Watched For A While," precisely:**
+- `userStatus` is `watching` **or** `caught_up` — an explicit include-list rather than "everything except a few excluded values," so the section can never silently start showing a new `userStatus` value added later without a deliberate decision to include it. (`caught_up` can't exist in real data yet — nothing assigns it before enrichment ships, §7a — but the filter is written to already be correct once it can.)
+- `lastWatchedAt` is older than the threshold (unchanged from today).
+- Never `dropped` (the user already told MyTv they know — re-nudging is noise) or `completed` (nothing to watch, staleness is irrelevant) — both already excluded by the include-list above, called out explicitly here because they're the two cases most likely to be assumed rather than checked.
+- Never `watchlist` (never started, so "haven't watched in a while" doesn't apply — also already excluded by the include-list).
+- **Never `paused`, at least for now** — a user who explicitly paused a show already told MyTv they know they stopped; re-surfacing it as "haven't watched in a while" is redundant with information the user already gave. This is a deliberate, revisitable choice, not settled permanently — if it turns out users want paused-but-old shows resurfaced as a gentle "still want to get back to this?" nudge, that's a one-line change (add `paused` to the include-list), not a redesign.
 
 `paused`, `dropped`, and `completed` series are **deliberately invisible to all four sections above** — that's the functional point of those statuses existing (decluttering Home). A future "all series" or "paused/dropped" management view would be the place to surface them; out of scope here.
 
@@ -128,8 +164,8 @@ One derivation function — `deriveUserStatus(nextEpisodeExists, releaseStatus)`
 - **Trakt's `status` enum is still unconfirmed** (§3) — carried over as an open item from both enrichment plan docs, not resolved by this document.
 - **Revival handling (§7 step 3)** is specified but not going to come up often — low priority to implement first, included for completeness rather than urgency.
 
-## 11. Explicitly not done in this pass
+## 11. Explicitly not done (as of this revision)
 
-- No `prisma/schema.prisma` changes — §9 is a summary for a future pass, not applied.
-- No code changes — `episode-watch.service.ts`, `import-tvtime/normalize-watched-episodes.ts`, `me.service.ts`, and the enrichment `apply` logic (which doesn't exist yet at all — both enrichment pipelines are still dry-run only) all stay exactly as they are today.
-- No backfill run against the existing 433 imported series.
+- No `prisma/schema.prisma` changes in this revision — §9's schema (already applied in an earlier pass) is unchanged; this revision is docs plus the §7a report-preview fields plus the §8 stale-filter correction in `me.service.ts`.
+- No enrichment **apply** step exists or was added — `trakt-enrichment`/`tmdb-enrichment` remain dry-run only, confirmed by the same structural check used throughout this project (no write calls to any app-facing table). §7a's preview fields are computed and reported, never written.
+- No live Trakt/TMDb calls were required to make this revision's changes — the report-preview fields and doc corrections don't depend on calling either API, only on data already fetched by prior/future dry runs.

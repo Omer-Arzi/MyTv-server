@@ -9,10 +9,12 @@
 // enforced structurally (no such write calls exist below), not by a flag.
 // The only writes are to ImportBatch/ImportRawRow/ImportIssue.
 
-import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient } from '@prisma/client';
+import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient, UserSeriesStatus } from '@prisma/client';
 import { TmdbClient, MAX_APPEND_TO_RESPONSE_ITEMS } from './tmdb-client';
 import { decideTier, extractTitleYearHint, scoreCandidates, detectAnimeNumberingRisk, ScoreBreakdown, TitleYearHint } from './scoring';
 import { getAppendedSeason, TmdbSeason, TmdbTvDetails, TmdbTvSearchResult } from './tmdb-types';
+import { mapTmdbStatusToReleaseStatus } from './release-status-mapping';
+import { proposeUserStatusAfterEnrichment } from '../src/common/derive-user-status';
 
 const BATCH_SOURCE = 'tmdb-enrichment';
 
@@ -38,6 +40,11 @@ export interface AutoMatchCandidateReport {
   watchedEpisodeCount: number;
   tmdbTotalEpisodeCount: number;
   animeNumberingRiskDetected: boolean;
+  // Preview-only (docs/status-model-plan.md §7a) — what userStatus would
+  // become if this candidate were applied, computed but never written.
+  currentUserStatus: UserSeriesStatus;
+  proposedUserStatusAfterEnrichment: UserSeriesStatus;
+  userStatusChangeReason: string;
 }
 
 export interface NeedsReviewEntry {
@@ -49,6 +56,9 @@ export interface NeedsReviewEntry {
   watchedEpisodeCount: number | null;
   tmdbTotalEpisodeCount: number | null;
   animeNumberingRiskDetected: boolean | null;
+  currentUserStatus: UserSeriesStatus | null;
+  proposedUserStatusAfterEnrichment: UserSeriesStatus | null;
+  userStatusChangeReason: string | null;
 }
 
 export interface EnrichmentDryRunResult {
@@ -112,6 +122,14 @@ export async function runEnrichmentDryRun(
     watchedCountBySeriesId.set(seriesId, (watchedCountBySeriesId.get(seriesId) ?? 0) + 1);
   }
 
+  // Current userStatus per series, for the currentUserStatus/
+  // proposedUserStatusAfterEnrichment preview fields (docs/status-model-plan.md §7a).
+  const progressRows = await prisma.userSeriesProgress.findMany({
+    where: { userId: options.userId },
+    select: { seriesId: true, userStatus: true },
+  });
+  const currentUserStatusBySeriesId = new Map(progressRows.map((p) => [p.seriesId, p.userStatus]));
+
   const autoMatchCandidates: AutoMatchCandidateReport[] = [];
   const needsReview: NeedsReviewEntry[] = [];
   const issues: Prisma.ImportIssueCreateManyInput[] = [];
@@ -139,6 +157,9 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount: null,
         animeNumberingRiskDetected: null,
+        currentUserStatus: null,
+        proposedUserStatusAfterEnrichment: null,
+        userStatusChangeReason: null,
       });
       issues.push({
         importBatchId: batch.id,
@@ -169,6 +190,14 @@ export async function runEnrichmentDryRun(
       originCountry: show.origin_country,
     });
 
+    const currentUserStatus = currentUserStatusBySeriesId.get(s.id) ?? UserSeriesStatus.UNKNOWN;
+    const { proposedUserStatus, reason: userStatusChangeReason } = proposeUserStatusAfterEnrichment({
+      currentUserStatus,
+      watchedEpisodeCount,
+      totalKnownEpisodeCount: tmdbTotalEpisodeCount,
+      candidateReleaseStatus: mapTmdbStatusToReleaseStatus(show.status),
+    });
+
     let tier = decision.tier;
     let reason = decision.reason;
 
@@ -188,6 +217,9 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount,
         animeNumberingRiskDetected,
+        currentUserStatus,
+        proposedUserStatusAfterEnrichment: proposedUserStatus,
+        userStatusChangeReason,
       });
     } else {
       needsReview.push({
@@ -199,6 +231,9 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount,
         animeNumberingRiskDetected,
+        currentUserStatus,
+        proposedUserStatusAfterEnrichment: proposedUserStatus,
+        userStatusChangeReason,
       });
       issues.push({
         importBatchId: batch.id,

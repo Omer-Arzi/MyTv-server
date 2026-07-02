@@ -16,7 +16,7 @@ export class StaleSeriesItemDto {
   @ApiProperty({
     enum: UserSeriesStatus,
     example: UserSeriesStatus.WATCHING,
-    description: 'My personal viewing status for this series — never DROPPED or COMPLETED for this section.',
+    description: 'My personal viewing status for this series — always WATCHING or CAUGHT_UP for this section, never WATCHLIST/PAUSED/DROPPED/COMPLETED.',
   })
   userStatus: UserSeriesStatus;
 }

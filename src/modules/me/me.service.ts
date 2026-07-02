@@ -62,12 +62,17 @@ export class MeService {
     UserSeriesStatus.UNKNOWN,
   ];
 
-  // docs/status-model-plan.md §8: DROPPED/COMPLETED are excluded because
-  // re-nudging about a show the user already disengaged from (or fully
-  // finished) is noise, not a useful prompt. Everything else stays eligible —
-  // PAUSED/WATCHLIST/CAUGHT_UP/UNKNOWN rows will only ever appear here if
-  // they also happen to have a non-null, old lastWatchedAt.
-  private static readonly STALE_EXCLUDED_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.DROPPED, UserSeriesStatus.COMPLETED];
+  // docs/status-model-plan.md §8: an INCLUDE-list, not an exclude-list, so
+  // this section can never silently start showing a future userStatus value
+  // without a deliberate decision to add it here. WATCHING is the only value
+  // that occurs in practice today; CAUGHT_UP is included because it's
+  // correct once enrichment can assign it (nothing does yet). DROPPED/
+  // COMPLETED/WATCHLIST are excluded because re-nudging about a show the
+  // user disengaged from, fully finished, or never started is noise, not a
+  // useful prompt. PAUSED is excluded for now too — a user who explicitly
+  // paused a show already told MyTv they know they stopped, so resurfacing
+  // it here would be redundant; revisit if that turns out to be poor UX.
+  private static readonly STALE_INCLUDED_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP];
 
   async getWatchNext(userId: string): Promise<WatchNextItemDto[]> {
     const progress = await this.prisma.userSeriesProgress.findMany({
@@ -99,7 +104,7 @@ export class MeService {
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
-        userStatus: { notIn: MeService.STALE_EXCLUDED_STATUSES },
+        userStatus: { in: MeService.STALE_INCLUDED_STATUSES },
         lastWatchedAt: { not: null, lt: cutoff },
       },
       orderBy: { lastWatchedAt: 'asc' },
