@@ -6,3 +6,4 @@ dist/
 tvtime-export/
 import-tvtime/output/
 trakt-enrichment/output/
+tmdb-enrichment/output/

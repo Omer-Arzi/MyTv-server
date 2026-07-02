@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "test", "**/*spec.ts", "**/*.test.ts", "prisma", "import-tvtime", "trakt-enrichment"]
+  "exclude": ["node_modules", "dist", "test", "**/*spec.ts", "**/*.test.ts", "prisma", "import-tvtime", "trakt-enrichment", "tmdb-enrichment"]
 }
