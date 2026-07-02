@@ -54,6 +54,9 @@ model Series {
   title         String
   overview      String?
   posterUrl     String?
+  // "Fanart"/backdrop-style wide image, distinct from posterUrl. Added for
+  // Trakt enrichment — see docs/trakt-enrichment-plan.md §6.
+  backdropUrl   String?
   status        SeriesStatus @default(ONGOING)
   // Freeform bag for import-sourced fields with no dedicated column yet,
   // e.g. TV Time's internal tv_show_id. See docs/tvtime-data-audit.md §5.
@@ -72,10 +75,17 @@ model Series {
 }
 
 model Season {
-  id           String  @id @default(uuid())
-  seriesId     String
-  seasonNumber Int
-  title        String?
+  id            String  @id @default(uuid())
+  seriesId      String
+  seasonNumber  Int
+  title         String?
+  // TV Time has nothing season-level to enrich beyond seasonNumber/title, so
+  // Season didn't get these in the original import schema pass. Trakt does
+  // have season-level data (overview, poster, its own season id) — added for
+  // consistency with every other enrichable model. See
+  // docs/trakt-enrichment-plan.md §6.
+  rawMetadata   Json?
+  importBatchId String?
 
   series   Series    @relation(fields: [seriesId], references: [id], onDelete: Cascade)
   episodes Episode[]
@@ -94,6 +104,11 @@ model Episode {
   overview       String?
   airDate        DateTime?
   runtimeMinutes Int?
+  // A rendering-critical field (used directly in an <img> tag), not an
+  // unmapped/archival one — belongs in a real column rather than
+  // rawMetadata, unlike e.g. TV Time's bulk_type or Trakt's raw candidate
+  // list. See docs/trakt-enrichment-plan.md §6 gap #4.
+  imageUrl       String?
   rawMetadata    Json?
   importBatchId  String?
 
@@ -253,12 +268,29 @@ model SeriesRating {
 // future Trakt integration. Not populated/used yet. TV Time's own internal
 // ids are NOT stored here (different provider, different meaning) — they go
 // in Series.rawMetadata / Episode.rawMetadata instead.
+//
+// traktId/tmdbId/imdbId stay as specific, uniquely-constrained columns
+// (queryable, one per provider). provider/providerId are a generic layer on
+// top recording which provider's match *established* this row in the first
+// place — e.g. provider="trakt", providerId=<trakt's id>, matching traktId
+// today — so a future non-Trakt-first matching path has somewhere to record
+// "matched via X" without another schema change. matchConfidence/matchSource/
+// matchedAt/rawMetadata record *how* the match was made (score, algorithm vs
+// manual correction, when, full raw candidate/scoring detail) — see
+// docs/trakt-enrichment-plan.md §6 gap #3.
 model ExternalIds {
   id       String  @id @default(uuid())
   seriesId String  @unique
   traktId  String? @unique
   tmdbId   String? @unique
   imdbId   String? @unique
+
+  provider        String?
+  providerId      String?
+  matchConfidence Float?
+  matchSource     String?
+  matchedAt       DateTime?
+  rawMetadata     Json?
 
   series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
 }

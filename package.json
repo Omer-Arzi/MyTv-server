@@ -19,7 +19,9 @@
     "postinstall": "prisma generate",
     "test": "jest",
     "import:tvtime": "ts-node import-tvtime/run.ts",
-    "import:tvtime:dry-run": "ts-node import-tvtime/run.ts --dry-run"
+    "import:tvtime:dry-run": "ts-node import-tvtime/run.ts --dry-run",
+    "trakt:backfill-tvtime-show-id": "ts-node trakt-enrichment/run-backfill.ts",
+    "trakt:enrichment-dry-run": "ts-node trakt-enrichment/run-enrichment-dry-run.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -40,6 +42,7 @@
     "@types/express": "^4.17.21",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.2",
+    "dotenv": "^17.4.2",
     "jest": "^30.4.2",
     "prisma": "^5.22.0",
     "ts-jest": "^29.4.11",
