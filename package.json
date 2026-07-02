@@ -23,7 +23,8 @@
     "import:tvtime:dry-run": "ts-node import-tvtime/run.ts --dry-run",
     "trakt:backfill-tvtime-show-id": "ts-node trakt-enrichment/run-backfill.ts",
     "trakt:enrichment-dry-run": "ts-node trakt-enrichment/run-enrichment-dry-run.ts",
-    "tmdb:enrichment-dry-run": "ts-node tmdb-enrichment/run-enrichment-dry-run.ts"
+    "tmdb:enrichment-dry-run": "ts-node tmdb-enrichment/run-enrichment-dry-run.ts",
+    "tmdb:apply-plan": "ts-node tmdb-enrichment/run-apply-plan.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
