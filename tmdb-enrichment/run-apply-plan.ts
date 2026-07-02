@@ -5,31 +5,9 @@ import { PrismaClient } from '@prisma/client';
 import { TmdbClient } from './tmdb-client';
 import { runApplyPlan } from './apply-plan';
 import { TmdbApplyPlan } from './apply-plan-types';
-import { DEV_USER_ID } from '../src/common/constants';
+import { ArgParseError, parseApplyPlanArgs } from './apply-plan-cli-args';
 
 const DEFAULT_OUTPUT_ROOT = path.join(__dirname, 'output');
-
-interface CliOptions {
-  userId: string;
-  planPath: string | null;
-  apply: boolean;
-  seriesIds?: string[];
-  force: boolean;
-}
-
-function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { userId: DEV_USER_ID, planPath: null, apply: false, force: false };
-
-  for (const arg of argv) {
-    if (arg === '--apply') options.apply = true;
-    else if (arg === '--force') options.force = true;
-    else if (arg.startsWith('--user=')) options.userId = arg.slice('--user='.length);
-    else if (arg.startsWith('--plan=')) options.planPath = path.resolve(arg.slice('--plan='.length));
-    else if (arg.startsWith('--series=')) options.seriesIds = arg.slice('--series='.length).split(',').filter(Boolean);
-  }
-
-  return options;
-}
 
 // tmdb-apply-plan.json lives at tmdb-enrichment/output/<batchId>/tmdb-apply-plan.json
 // (see docs/tmdb-matching-tuning-notes.md's apply-plan turn) — without an
@@ -38,7 +16,7 @@ function parseArgs(argv: string[]): CliOptions {
 // inspections found "the latest batch."
 function findLatestApplyPlan(outputRoot: string): string {
   if (!existsSync(outputRoot)) {
-    throw new Error(`no ${outputRoot} directory — generate a tmdb-apply-plan.json first, or pass --plan=<path>`);
+    throw new Error(`no ${outputRoot} directory — generate a tmdb-apply-plan.json first, or pass --plan <path>`);
   }
 
   const candidates = readdirSync(outputRoot)
@@ -60,7 +38,17 @@ async function main() {
     process.exit(1);
   }
 
-  const options = parseArgs(process.argv.slice(2));
+  let options;
+  try {
+    options = parseApplyPlanArgs(process.argv.slice(2));
+  } catch (err) {
+    if (err instanceof ArgParseError) {
+      console.error(`Argument error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
   const planPath = options.planPath ?? findLatestApplyPlan(DEFAULT_OUTPUT_ROOT);
   const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as TmdbApplyPlan;
   const outDir = path.dirname(planPath);
