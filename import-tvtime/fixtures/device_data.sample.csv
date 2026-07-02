@@ -1,0 +1,2 @@
+created_at,updated_at,id,device_id,name,value
+2020-01-01 10:00:00,2020-01-01 10:00:00,1,some-device-uuid,push_enabled,true

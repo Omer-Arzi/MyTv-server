@@ -1,0 +1,2 @@
+reset_token,range_key,valid_until,user_id,hash_key,email,username,password_hash,encrypted_secret,external_id,provider,encrypted_token
+abc123,abc123,2025-04-28T11:08:50.409622292Z,111,password_reset_token,someone@example.com,,,,,,
