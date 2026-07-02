@@ -9,7 +9,7 @@
 // enforced structurally (no such write calls exist below), not by a flag.
 // The only writes are to ImportBatch/ImportRawRow/ImportIssue.
 
-import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient, UserSeriesStatus } from '@prisma/client';
+import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { TmdbClient, MAX_APPEND_TO_RESPONSE_ITEMS } from './tmdb-client';
 import { decideTier, extractTitleYearHint, scoreCandidates, detectAnimeNumberingRisk, ScoreBreakdown, TitleYearHint } from './scoring';
 import { getAppendedSeason, TmdbSeason, TmdbTvDetails, TmdbTvSearchResult } from './tmdb-types';
@@ -45,6 +45,11 @@ export interface AutoMatchCandidateReport {
   currentUserStatus: UserSeriesStatus;
   proposedUserStatusAfterEnrichment: UserSeriesStatus;
   userStatusChangeReason: string;
+  // Same preview idea, for releaseStatus — structured fields, not just
+  // embedded in userStatusChangeReason prose. Never written to Series.
+  currentReleaseStatus: ReleaseStatus;
+  tmdbRawStatus: string | null;
+  proposedReleaseStatus: ReleaseStatus;
 }
 
 export interface NeedsReviewEntry {
@@ -59,6 +64,9 @@ export interface NeedsReviewEntry {
   currentUserStatus: UserSeriesStatus | null;
   proposedUserStatusAfterEnrichment: UserSeriesStatus | null;
   userStatusChangeReason: string | null;
+  currentReleaseStatus: ReleaseStatus | null;
+  tmdbRawStatus: string | null;
+  proposedReleaseStatus: ReleaseStatus | null;
 }
 
 export interface EnrichmentDryRunResult {
@@ -107,7 +115,7 @@ export async function runEnrichmentDryRun(
 
   const series = await prisma.series.findMany({
     where: { externalIds: null },
-    select: { id: true, title: true },
+    select: { id: true, title: true, releaseStatus: true },
     orderBy: { title: 'asc' },
     take: options.limit,
   });
@@ -160,6 +168,9 @@ export async function runEnrichmentDryRun(
         currentUserStatus: null,
         proposedUserStatusAfterEnrichment: null,
         userStatusChangeReason: null,
+        currentReleaseStatus: null,
+        tmdbRawStatus: null,
+        proposedReleaseStatus: null,
       });
       issues.push({
         importBatchId: batch.id,
@@ -190,12 +201,20 @@ export async function runEnrichmentDryRun(
       originCountry: show.origin_country,
     });
 
+    // Structured release-status preview fields, not just embedded in
+    // userStatusChangeReason prose — see docs/tmdb-matching-tuning-notes.md
+    // and docs/status-model-plan.md §7a. Still preview-only: never written
+    // to Series.releaseStatus.
+    const currentReleaseStatus = s.releaseStatus;
+    const tmdbRawStatus = show.status ?? null;
+    const proposedReleaseStatus = mapTmdbStatusToReleaseStatus(tmdbRawStatus);
+
     const currentUserStatus = currentUserStatusBySeriesId.get(s.id) ?? UserSeriesStatus.UNKNOWN;
     const { proposedUserStatus, reason: userStatusChangeReason } = proposeUserStatusAfterEnrichment({
       currentUserStatus,
       watchedEpisodeCount,
       totalKnownEpisodeCount: tmdbTotalEpisodeCount,
-      candidateReleaseStatus: mapTmdbStatusToReleaseStatus(show.status),
+      candidateReleaseStatus: proposedReleaseStatus,
     });
 
     let tier = decision.tier;
@@ -220,6 +239,9 @@ export async function runEnrichmentDryRun(
         currentUserStatus,
         proposedUserStatusAfterEnrichment: proposedUserStatus,
         userStatusChangeReason,
+        currentReleaseStatus,
+        tmdbRawStatus,
+        proposedReleaseStatus,
       });
     } else {
       needsReview.push({
@@ -234,6 +256,9 @@ export async function runEnrichmentDryRun(
         currentUserStatus,
         proposedUserStatusAfterEnrichment: proposedUserStatus,
         userStatusChangeReason,
+        currentReleaseStatus,
+        tmdbRawStatus,
+        proposedReleaseStatus,
       });
       issues.push({
         importBatchId: batch.id,

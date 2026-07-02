@@ -18,7 +18,10 @@ export interface DryRunReportMeta {
 // userStatus would become if this candidate were applied —
 // currentUserStatus/proposedUserStatusAfterEnrichment/
 // userStatusChangeReason. Preview only: nothing here is written to
-// UserSeriesProgress.
+// UserSeriesProgress. Same idea for releaseStatus, as real structured
+// fields rather than only embedded in userStatusChangeReason prose —
+// currentReleaseStatus/tmdbRawStatus/proposedReleaseStatus. Preview only:
+// nothing here is written to Series.releaseStatus.
 export function buildEnrichmentReport(meta: DryRunReportMeta, result: EnrichmentDryRunResult) {
   return {
     importBatchId: result.importBatchId,
@@ -50,6 +53,9 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
       currentUserStatus: c.currentUserStatus,
       proposedUserStatusAfterEnrichment: c.proposedUserStatusAfterEnrichment,
       userStatusChangeReason: c.userStatusChangeReason,
+      currentReleaseStatus: c.currentReleaseStatus,
+      tmdbRawStatus: c.tmdbRawStatus,
+      proposedReleaseStatus: c.proposedReleaseStatus,
     })),
   };
 }
@@ -78,6 +84,9 @@ export function buildNeedsReview(result: EnrichmentDryRunResult) {
     currentUserStatus: entry.currentUserStatus,
     proposedUserStatusAfterEnrichment: entry.proposedUserStatusAfterEnrichment,
     userStatusChangeReason: entry.userStatusChangeReason,
+    currentReleaseStatus: entry.currentReleaseStatus,
+    tmdbRawStatus: entry.tmdbRawStatus,
+    proposedReleaseStatus: entry.proposedReleaseStatus,
   }));
 }
 
