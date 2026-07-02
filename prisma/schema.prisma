@@ -21,6 +21,19 @@ enum ProgressStatus {
   COMPLETED
 }
 
+enum ImportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ImportIssueSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
 model User {
   id          String   @id @default(uuid())
   email       String   @unique
@@ -28,24 +41,34 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  progress       UserSeriesProgress[]
-  episodeWatches EpisodeWatch[]
-  watchlistItems WatchlistItem[]
+  progress        UserSeriesProgress[]
+  episodeWatches  EpisodeWatch[]
+  watchlistItems  WatchlistItem[]
+  episodeRatings  EpisodeRating[]
+  episodeEmotions EpisodeEmotion[]
+  seriesRatings   SeriesRating[]
 }
 
 model Series {
-  id        String       @id @default(uuid())
-  title     String
-  overview  String?
-  posterUrl String?
-  status    SeriesStatus @default(ONGOING)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id            String       @id @default(uuid())
+  title         String
+  overview      String?
+  posterUrl     String?
+  status        SeriesStatus @default(ONGOING)
+  // Freeform bag for import-sourced fields with no dedicated column yet,
+  // e.g. TV Time's internal tv_show_id. See docs/tvtime-data-audit.md §5.
+  rawMetadata   Json?
+  // Breadcrumb only (no relation) — which import run last touched this row.
+  // See docs/mytv-prisma-schema-plan.md §3 for why this isn't a hard FK.
+  importBatchId String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   seasons        Season[]
   progress       UserSeriesProgress[]
   watchlistItems WatchlistItem[]
   externalIds    ExternalIds?
+  ratings        SeriesRating[]
 }
 
 model Season {
@@ -64,13 +87,20 @@ model Episode {
   id             String    @id @default(uuid())
   seasonId       String
   episodeNumber  Int
-  title          String
+  // Nullable: TV Time's export carries no episode titles/overviews/air dates
+  // at all (docs/tvtime-data-audit.md §5) — imported episodes stay null here
+  // rather than getting an invented placeholder, until Trakt backfills them.
+  title          String?
   overview       String?
   airDate        DateTime?
   runtimeMinutes Int?
+  rawMetadata    Json?
+  importBatchId  String?
 
-  season  Season         @relation(fields: [seasonId], references: [id], onDelete: Cascade)
-  watches EpisodeWatch[]
+  season   Season           @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  watches  EpisodeWatch[]
+  ratings  EpisodeRating[]
+  emotions EpisodeEmotion[]
 
   // Episodes that some UserSeriesProgress currently points to as "next episode to watch"
   progressPointingHere UserSeriesProgress[] @relation("NextEpisode")
@@ -100,12 +130,22 @@ model UserSeriesProgress {
 }
 
 // A single watched-episode event. Unique per (user, episode) — re-watch
-// tracking is out of scope for V1, marking watched again just updates it.
+// *event* tracking is still out of scope for V1, marking watched again just
+// updates it. rewatchCount preserves the "how many times" signal TV Time
+// carries without modeling full rewatch history (docs/mytv-prisma-schema-plan.md §4).
 model EpisodeWatch {
-  id        String   @id @default(uuid())
-  userId    String
-  episodeId String
-  watchedAt DateTime @default(now())
+  id                   String   @id @default(uuid())
+  userId               String
+  episodeId            String
+  watchedAt            DateTime @default(now())
+  // True when watchedAt is a rough guess rather than a real date — e.g. TV
+  // Time's bulk "mark previous episodes watched" action stamps many episodes
+  // with one timestamp (docs/tvtime-data-audit.md §3.1). Lets the UI show
+  // "date approximate" instead of presenting a guess as fact.
+  watchDateApproximate Boolean  @default(false)
+  rewatchCount         Int      @default(0)
+  rawMetadata          Json?
+  importBatchId        String?
 
   user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   episode Episode      @relation(fields: [episodeId], references: [id], onDelete: Cascade)
@@ -119,6 +159,11 @@ model EpisodeNote {
   id             String   @id @default(uuid())
   episodeWatchId String   @unique
   text           String
+  // Social metadata from imported TV Time comments that has no MyTv
+  // equivalent (likes, spoiler flag, twitter/fb cross-post) — preserved
+  // here rather than dropped. See docs/tvtime-data-audit.md §3.5.
+  rawMetadata    Json?
+  importBatchId  String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -126,10 +171,14 @@ model EpisodeNote {
 }
 
 model WatchlistItem {
-  id       String   @id @default(uuid())
-  userId   String
-  seriesId String
-  addedAt  DateTime @default(now())
+  id            String   @id @default(uuid())
+  userId        String
+  seriesId      String
+  addedAt       DateTime @default(now())
+  // Which reconciled TV Time source(s) this came from, for traceability if a
+  // reconciliation later turns out wrong. See docs/tvtime-data-audit.md §3.6.
+  rawMetadata   Json?
+  importBatchId String?
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
@@ -137,8 +186,73 @@ model WatchlistItem {
   @@unique([userId, seriesId])
 }
 
+// A user's rating for one episode. TV Time's rating scale is not confirmed
+// from the export alone (docs/tvtime-data-audit.md §3.3) — rawValue is
+// stored as received; normalizedValue is filled in later, once the scale is
+// confirmed, without a migration.
+model EpisodeRating {
+  id              String   @id @default(uuid())
+  userId          String
+  episodeId       String
+  rawValue        Int
+  normalizedValue Decimal? @db.Decimal(3, 1)
+  rawMetadata     Json?
+  importBatchId   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, episodeId])
+  @@index([episodeId])
+}
+
+// A user's emotional reaction(s) to one episode. Unlike ratings, TV Time
+// allows more than one reaction per episode, so this is not unique per
+// (userId, episodeId) alone. See docs/tvtime-data-audit.md §3.4.
+model EpisodeEmotion {
+  id                String   @id @default(uuid())
+  userId            String
+  episodeId         String
+  rawValue          Int
+  normalizedEmotion String?
+  rawMetadata       Json?
+  importBatchId     String?
+  createdAt         DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, episodeId, rawValue])
+  @@index([episodeId])
+}
+
+// Whole-series rating (tv_show_rate.csv) — a different feature from episode
+// ratings. Unlike them this one IS on a known, decoded scale (observed
+// values like "4.50", "5" on a 0-5 scale), so it gets a real Decimal value
+// from day one instead of a rawValue/normalizedValue pair.
+model SeriesRating {
+  id            String   @id @default(uuid())
+  userId        String
+  seriesId      String
+  value         Decimal  @db.Decimal(3, 2)
+  rawMetadata   Json?
+  importBatchId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seriesId])
+  @@index([seriesId])
+}
+
 // External metadata provider ids for a series (Trakt/TMDB/IMDB), for the
-// future Trakt integration. Not populated/used yet.
+// future Trakt integration. Not populated/used yet. TV Time's own internal
+// ids are NOT stored here (different provider, different meaning) — they go
+// in Series.rawMetadata / Episode.rawMetadata instead.
 model ExternalIds {
   id       String  @id @default(uuid())
   seriesId String  @unique
@@ -147,4 +261,73 @@ model ExternalIds {
   imdbId   String? @unique
 
   series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+}
+
+// --- Import bookkeeping ---------------------------------------------------
+// Fully separate from the app models above: nothing here is referenced by a
+// hard @relation from Series/Episode/EpisodeWatch/etc — those only carry a
+// loose importBatchId breadcrumb. See docs/mytv-prisma-schema-plan.md §6.
+
+// One row per importer run. skippedFiles records which source files were
+// excluded wholesale (sensitive data — docs/tvtime-data-audit.md §4) for
+// this run, so the policy is auditable per-batch, not just documented in prose.
+model ImportBatch {
+  id           String       @id @default(uuid())
+  source       String
+  status       ImportStatus @default(PENDING)
+  startedAt    DateTime     @default(now())
+  finishedAt   DateTime?
+  // [{ file: string, reason: string }]
+  skippedFiles Json?
+  notes        String?
+
+  rawRows ImportRawRow[]
+  issues  ImportIssue[]
+}
+
+// One row per source CSV row that was imported (i.e. NOT one of the
+// wholesale-excluded sensitive files). payload is the raw row, untyped and
+// unmodified. resolvedEntityType/Id are filled in by the transform pass once
+// it decides what this row became — the queryable "which raw rows fed this
+// app row" direction, since many raw rows can resolve to one app row (e.g.
+// the same watch logged in both tracking-prod-records.csv and
+// tracking-prod-records-v2.csv — docs/tvtime-data-audit.md §3.1).
+model ImportRawRow {
+  id                 String    @id @default(uuid())
+  importBatchId      String
+  sourceFile         String
+  sourceRowNumber    Int
+  payload            Json
+  resolvedEntityType String?
+  resolvedEntityId   String?
+  processedAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([importBatchId, sourceFile])
+  @@index([resolvedEntityType, resolvedEntityId])
+}
+
+// Anything the transform pass couldn't resolve automatically — ambiguous
+// series-name duplicates, watchlist source conflicts, comments with no
+// matching watch event, count-mismatch sanity-check failures, etc. Mirrors
+// needs-review.json from docs/tvtime-data-audit.md §7.5, but queryable and
+// tied to a specific batch/row instead of being a flat file.
+model ImportIssue {
+  id                String              @id @default(uuid())
+  importBatchId     String
+  severity          ImportIssueSeverity
+  sourceFile        String?
+  sourceRowNumber   Int?
+  relatedEntityType String?
+  relatedEntityId   String?
+  message           String
+  resolved          Boolean             @default(false)
+  createdAt         DateTime            @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([importBatchId, resolved])
+  @@index([relatedEntityType, relatedEntityId])
 }

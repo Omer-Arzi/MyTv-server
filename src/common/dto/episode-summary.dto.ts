@@ -13,8 +13,12 @@ export class EpisodeSummaryDto {
   @ApiProperty({ example: 5, description: 'Episode number within the season, 1-indexed' })
   episodeNumber: number;
 
-  @ApiProperty({ example: 'Into the Dark' })
-  title: string;
+  @ApiPropertyOptional({
+    example: 'Into the Dark',
+    nullable: true,
+    description: 'Null for episodes without known metadata yet (e.g. imported without a title source).',
+  })
+  title?: string | null;
 
   @ApiPropertyOptional({ example: 'The crew loses contact with mission control.' })
   overview?: string | null;
