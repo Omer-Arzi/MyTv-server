@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient, ProgressStatus } from '@prisma/client';
+import { Prisma, PrismaClient, UserSeriesStatus } from '@prisma/client';
 import { groupWatchEvents, parseTrackingV2Rows } from './parse-tracking-v2';
 import { EpisodeWatchAggregate, ImportIssueInput, UserSeriesRow, WatchEvent } from './types';
 
@@ -163,8 +163,17 @@ export async function normalizeWatchedEpisodes(
 
   let watchlistItemsUpserted = 0;
 
+  // Tracked across all user-series rows (not just isForLater ones) so the
+  // UserSeriesProgress pass below can apply "is_archived -> DROPPED" and
+  // "is_for_later, never watched -> WATCHLIST" per docs/status-model-plan.md
+  // §5, regardless of which signal a given series happened to carry.
+  const isArchivedBySeriesId = new Map<string, boolean>();
+  const isForLaterBySeriesId = new Map<string, boolean>();
+
   for (const row of validUserSeriesRows) {
     const seriesId = await findOrCreateSeries(row.seriesName);
+    isArchivedBySeriesId.set(seriesId, row.isArchived);
+    isForLaterBySeriesId.set(seriesId, row.isForLater);
     let resolvedEntityType: string | undefined;
     let resolvedEntityId: string | undefined;
 
@@ -220,21 +229,52 @@ export async function normalizeWatchedEpisodes(
     });
   }
 
-  // UserSeriesProgress.nextEpisodeId is deliberately left null and status
-  // stays WATCHING for every imported series: TV Time only tells us about
-  // episodes the user interacted with, not a show's full episode catalog, so
-  // "next episode" and "completed" are both unknowable until a future Trakt
-  // enrichment pass provides the full episode list. See
-  // docs/mytv-prisma-schema-plan.md §6.
+  // UserSeriesProgress.nextEpisodeId is deliberately left null for every
+  // imported series: TV Time only tells us about episodes the user
+  // interacted with, not a show's full episode catalog, so "next episode"
+  // is unknowable until a future Trakt/TMDb enrichment pass provides the
+  // full episode list. See docs/mytv-prisma-schema-plan.md §6.
+  //
+  // userStatus follows docs/status-model-plan.md §5 exactly:
+  //   - is_archived=true                          -> DROPPED, always
+  //   - watched, no full catalog yet               -> WATCHING (placeholder,
+  //     never CAUGHT_UP/COMPLETED — we don't know if more episodes exist)
+  //   - never watched, is_for_later=true            -> WATCHLIST
+  // A row that already carries a "protected" status this importer itself
+  // wouldn't have set (PAUSED/CAUGHT_UP/COMPLETED — only the live app sets
+  // those) is left untouched unless is_archived now says otherwise, so a
+  // re-import can never quietly undo real personal-status decisions.
+  const seriesIdsNeedingProgress = new Set<string>([
+    ...seriesIdsWithWatches,
+    ...[...isForLaterBySeriesId.entries()].filter(([, isForLater]) => isForLater).map(([seriesId]) => seriesId),
+  ]);
+
   let userSeriesProgressUpserted = 0;
-  for (const seriesId of seriesIdsWithWatches) {
+  for (const seriesId of seriesIdsNeedingProgress) {
     const lastWatchedAt = seriesLastWatchedAt.get(seriesId) ?? null;
+    const isArchived = isArchivedBySeriesId.get(seriesId) ?? false;
+    const hasWatches = seriesIdsWithWatches.has(seriesId);
+
+    // Anything reaching this loop without watches got here via
+    // isForLaterBySeriesId (see seriesIdsNeedingProgress above), so
+    // "not archived, no watches" implies WATCHLIST by construction.
+    const desiredStatus = isArchived
+      ? UserSeriesStatus.DROPPED
+      : hasWatches
+        ? UserSeriesStatus.WATCHING
+        : UserSeriesStatus.WATCHLIST;
+
+    const existing = await tx.userSeriesProgress.findUnique({ where: { userId_seriesId: { userId, seriesId } } });
+    const protectedStatuses: UserSeriesStatus[] = [UserSeriesStatus.PAUSED, UserSeriesStatus.CAUGHT_UP, UserSeriesStatus.COMPLETED];
+    const isProtectedExistingStatus = !!existing && protectedStatuses.includes(existing.userStatus);
+
     await tx.userSeriesProgress.upsert({
       where: { userId_seriesId: { userId, seriesId } },
-      create: { userId, seriesId, status: ProgressStatus.WATCHING, lastWatchedAt, nextEpisodeId: null },
+      create: { userId, seriesId, userStatus: desiredStatus, lastWatchedAt, nextEpisodeId: null },
       update: {
         lastWatchedAt:
-          lastWatchedAt && (await isNewerThanExisting(tx, userId, seriesId, lastWatchedAt)) ? lastWatchedAt : undefined,
+          lastWatchedAt && (!existing?.lastWatchedAt || lastWatchedAt > existing.lastWatchedAt) ? lastWatchedAt : undefined,
+        userStatus: isArchived ? UserSeriesStatus.DROPPED : isProtectedExistingStatus ? undefined : desiredStatus,
       },
     });
     userSeriesProgressUpserted += 1;
@@ -367,9 +407,4 @@ async function upsertEpisodeWatch(
     },
   });
   return { outcome: 'updated', watchId: updated.id };
-}
-
-async function isNewerThanExisting(tx: PrismaTx, userId: string, seriesId: string, candidate: Date): Promise<boolean> {
-  const existing = await tx.userSeriesProgress.findUnique({ where: { userId_seriesId: { userId, seriesId } } });
-  return !existing?.lastWatchedAt || candidate > existing.lastWatchedAt;
 }

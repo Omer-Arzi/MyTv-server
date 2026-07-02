@@ -8,7 +8,7 @@ export function toSeriesSummary(series: Series): SeriesSummaryDto {
     title: series.title,
     overview: series.overview,
     posterUrl: series.posterUrl,
-    status: series.status,
+    releaseStatus: series.releaseStatus,
   };
 }
 

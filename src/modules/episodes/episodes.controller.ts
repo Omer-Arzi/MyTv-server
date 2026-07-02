@@ -43,7 +43,7 @@ export class EpisodesController {
         title: 'The Great Voyage',
         overview: 'A crew explores the outer rim of known space.',
         posterUrl: 'https://images.example.com/great-voyage/poster.jpg',
-        status: 'ONGOING',
+        releaseStatus: 'RETURNING',
       },
       nextEpisode: {
         id: '3f6b1e2a-8c1d-4b2a-9e2e-444444444444',
@@ -56,6 +56,7 @@ export class EpisodesController {
         runtimeMinutes: 44,
       },
       seriesCompleted: false,
+      userStatus: 'WATCHING',
     },
   })
   @ApiNotFoundResponse({ description: 'Episode not found' })

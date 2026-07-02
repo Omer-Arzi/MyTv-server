@@ -10,9 +10,9 @@ There is no login yet. Every request is treated as the same hardcoded dev user. 
 
 ## Data model the client should know about
 
-- **Series** — a show. Has its own `status`: `ONGOING` / `ENDED` / `CANCELED` (whether the show itself is still airing).
+- **Series** — a show. Has its own `releaseStatus`: `UNKNOWN` / `RETURNING` / `ENDED` / `CANCELLED` / `IN_PRODUCTION` — the show's *public* broadcast status, provider-derived (TMDb/Trakt) and never affected by what any user has watched. `UNKNOWN` until an enrichment pass confirms it (most series are `UNKNOWN` today — enrichment isn't wired up yet).
 - **Season / Episode** — standard hierarchy. Episodes are identified by `id`, but also carry `seasonNumber` + `episodeNumber` for display.
-- **A user's progress on a series** is `WATCHING` or `COMPLETED` — separate from the series' own status. `COMPLETED` means the user has watched every episode that exists right now; if the show airs more episodes later, a fresh `nextEpisode` will appear the next time the user marks something watched on it (or once metadata syncs, in a later version).
+- **A user's personal status on a series** is `userStatus`, separate from the series' own `releaseStatus`: `UNKNOWN` / `WATCHLIST` / `WATCHING` / `PAUSED` / `DROPPED` / `CAUGHT_UP` / `COMPLETED`. `WATCHLIST`/`PAUSED`/`DROPPED` are user-controlled; `WATCHING`/`CAUGHT_UP`/`COMPLETED` are computed from watch activity. The distinction that matters most: `CAUGHT_UP` means "watched everything that exists so far, but the show is still airing — more may come," while `COMPLETED` means "watched everything, and the show itself is confirmed over." A fresh watch always resets `userStatus` to `WATCHING` (or `CAUGHT_UP`/`COMPLETED` if that was the last known episode) regardless of what it was before — so watching an episode is always enough to "resume" a `PAUSED`/`DROPPED` series without a separate action.
 - **EpisodeWatch** — one record per watched episode, optionally with a note attached.
 
 ## Home screen — `GET /home`
@@ -31,7 +31,7 @@ This is the interaction the response shapes are optimized for:
 
 1. User swipes an episode card right.
 2. Client immediately shows a loading state on that card and calls `POST /episodes/:episodeId/watch`.
-3. **On success**: the response includes `nextEpisode` (or `null`) for the *same series*. The client replaces the swiped card's content with `nextEpisode` in place — no extra fetch, no layout jump. If `nextEpisode` is `null`, `seriesCompleted` is `true` and the client should remove the card (or show a "completed" state) instead.
+3. **On success**: the response includes `nextEpisode` (or `null`) for the *same series*. The client replaces the swiped card's content with `nextEpisode` in place — no extra fetch, no layout jump. If `nextEpisode` is `null`, `seriesCompleted` is `true` and the client should remove the card; check the response's `userStatus` to tell a `CAUGHT_UP` show ("nothing to watch *yet*") apart from a genuinely `COMPLETED` one ("nothing more is coming") if the UI wants to say something different for each.
 4. **On failure**: the client animates the card back to its original position. Retrying is safe — marking watched is idempotent, so a retried call after a network failure won't create a duplicate watch or double-advance the series.
 
 This same shape is what powers `watchNext` on the home screen, so a "next episode" card always looks the same whether it came from `/home` or from a fresh `/episodes/:id/watch` call.

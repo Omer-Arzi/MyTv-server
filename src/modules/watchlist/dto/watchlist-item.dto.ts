@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { UserSeriesStatus } from '@prisma/client';
 import { SeriesSummaryDto } from '../../../common/dto/series-summary.dto';
 
 export class WatchlistItemDto {
@@ -10,4 +11,11 @@ export class WatchlistItemDto {
 
   @ApiProperty({ type: SeriesSummaryDto })
   series: SeriesSummaryDto;
+
+  @ApiProperty({
+    enum: UserSeriesStatus,
+    example: UserSeriesStatus.WATCHLIST,
+    description: 'My personal viewing status for this series — WATCHLIST unless watch activity has since moved it on.',
+  })
+  userStatus: UserSeriesStatus;
 }

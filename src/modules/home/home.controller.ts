@@ -30,7 +30,7 @@ export class HomeController {
             title: 'The Great Voyage',
             overview: 'A crew explores the outer rim of known space.',
             posterUrl: 'https://images.example.com/great-voyage/poster.jpg',
-            status: 'ONGOING',
+            releaseStatus: 'RETURNING',
           },
           episode: {
             id: '3f6b1e2a-8c1d-4b2a-9e2e-222222222222',
@@ -51,7 +51,7 @@ export class HomeController {
             title: 'The Great Voyage',
             overview: 'A crew explores the outer rim of known space.',
             posterUrl: 'https://images.example.com/great-voyage/poster.jpg',
-            status: 'ONGOING',
+            releaseStatus: 'RETURNING',
           },
           nextEpisode: {
             id: '3f6b1e2a-8c1d-4b2a-9e2e-444444444444',
@@ -64,6 +64,7 @@ export class HomeController {
             runtimeMinutes: 44,
           },
           lastWatchedAt: '2026-06-30T21:14:00.000Z',
+          userStatus: 'WATCHING',
         },
       ],
       staleSeries: [
@@ -73,7 +74,7 @@ export class HomeController {
             title: 'Old Town Mysteries',
             overview: 'A detective duo solves cases in a sleepy coastal town.',
             posterUrl: 'https://images.example.com/old-town/poster.jpg',
-            status: 'ENDED',
+            releaseStatus: 'ENDED',
           },
           lastWatchedAt: '2026-04-15T12:00:00.000Z',
           nextEpisode: {
@@ -86,6 +87,7 @@ export class HomeController {
             airDate: '2023-09-01T00:00:00.000Z',
             runtimeMinutes: 40,
           },
+          userStatus: 'WATCHING',
         },
       ],
     },

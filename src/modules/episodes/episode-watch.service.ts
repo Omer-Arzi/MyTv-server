@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ProgressStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
+import { deriveUserStatusFromNextEpisode } from '../../common/derive-user-status';
 import { MarkWatchedResponseDto } from './dto/mark-watched-response.dto';
 import { EpisodeWatchDto } from './dto/episode-watch.dto';
 
@@ -29,6 +29,12 @@ export class EpisodeWatchService {
 
     const nextEpisode = await this.findNextEpisode(seriesId, episode.season.seasonNumber, episode.episodeNumber);
 
+    // A fresh watch is the strongest signal available — always overwrite
+    // userStatus (clears any prior WATCHLIST/PAUSED/DROPPED without a
+    // separate "resume" step) rather than only filling it in on create.
+    // See docs/status-model-plan.md §6.
+    const userStatus = deriveUserStatusFromNextEpisode(!!nextEpisode, episode.season.series.releaseStatus);
+
     await this.prisma.userSeriesProgress.upsert({
       where: { userId_seriesId: { userId, seriesId } },
       create: {
@@ -36,12 +42,12 @@ export class EpisodeWatchService {
         seriesId,
         lastWatchedAt: watch.watchedAt,
         nextEpisodeId: nextEpisode?.id ?? null,
-        status: nextEpisode ? ProgressStatus.WATCHING : ProgressStatus.COMPLETED,
+        userStatus,
       },
       update: {
         lastWatchedAt: watch.watchedAt,
         nextEpisodeId: nextEpisode?.id ?? null,
-        status: nextEpisode ? ProgressStatus.WATCHING : ProgressStatus.COMPLETED,
+        userStatus,
       },
     });
 
@@ -55,6 +61,7 @@ export class EpisodeWatchService {
       series: toSeriesSummary(episode.season.series),
       nextEpisode: nextEpisode ? toEpisodeSummary(nextEpisode) : null,
       seriesCompleted: !nextEpisode,
+      userStatus,
     };
   }
 

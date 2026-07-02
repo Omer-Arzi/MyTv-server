@@ -16,6 +16,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:backfill-status-model": "ts-node prisma/backfill-status-model.ts",
     "postinstall": "prisma generate",
     "test": "jest",
     "import:tvtime": "ts-node import-tvtime/run.ts",

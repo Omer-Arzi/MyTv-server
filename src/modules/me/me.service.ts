@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { ProgressStatus } from '@prisma/client';
+import { UserSeriesStatus } from '@prisma/client';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
@@ -49,9 +49,33 @@ export class MeService {
     };
   }
 
+  // docs/status-model-plan.md §8: DROPPED/PAUSED/WATCHLIST are explicitly
+  // not-actively-engaged, COMPLETED/UNKNOWN have nothing to prompt. CAUGHT_UP
+  // is left in on purpose rather than excluded — it structurally can never
+  // have a nextEpisodeId, so the nextEpisodeId filter below already excludes
+  // it; excluding it here too would be redundant, not wrong.
+  private static readonly WATCH_NEXT_EXCLUDED_STATUSES: UserSeriesStatus[] = [
+    UserSeriesStatus.DROPPED,
+    UserSeriesStatus.PAUSED,
+    UserSeriesStatus.COMPLETED,
+    UserSeriesStatus.WATCHLIST,
+    UserSeriesStatus.UNKNOWN,
+  ];
+
+  // docs/status-model-plan.md §8: DROPPED/COMPLETED are excluded because
+  // re-nudging about a show the user already disengaged from (or fully
+  // finished) is noise, not a useful prompt. Everything else stays eligible —
+  // PAUSED/WATCHLIST/CAUGHT_UP/UNKNOWN rows will only ever appear here if
+  // they also happen to have a non-null, old lastWatchedAt.
+  private static readonly STALE_EXCLUDED_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.DROPPED, UserSeriesStatus.COMPLETED];
+
   async getWatchNext(userId: string): Promise<WatchNextItemDto[]> {
     const progress = await this.prisma.userSeriesProgress.findMany({
-      where: { userId, status: ProgressStatus.WATCHING, nextEpisodeId: { not: null } },
+      where: {
+        userId,
+        userStatus: { notIn: MeService.WATCH_NEXT_EXCLUDED_STATUSES },
+        nextEpisodeId: { not: null },
+      },
       orderBy: { lastWatchedAt: 'desc' },
       include: {
         series: true,
@@ -65,6 +89,7 @@ export class MeService {
         series: toSeriesSummary(p.series),
         nextEpisode: toEpisodeSummary(p.nextEpisode!),
         lastWatchedAt: p.lastWatchedAt,
+        userStatus: p.userStatus,
       }));
   }
 
@@ -74,7 +99,7 @@ export class MeService {
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
-        status: ProgressStatus.WATCHING,
+        userStatus: { notIn: MeService.STALE_EXCLUDED_STATUSES },
         lastWatchedAt: { not: null, lt: cutoff },
       },
       orderBy: { lastWatchedAt: 'asc' },
@@ -88,6 +113,7 @@ export class MeService {
       series: toSeriesSummary(p.series),
       lastWatchedAt: p.lastWatchedAt,
       nextEpisode: p.nextEpisode ? toEpisodeSummary(p.nextEpisode) : null,
+      userStatus: p.userStatus,
     }));
   }
 }

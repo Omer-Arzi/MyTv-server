@@ -7,17 +7,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// The show's own broadcast status (from metadata / future Trakt sync).
-// Distinct from UserSeriesProgress.status, which tracks THIS user's watch progress.
-enum SeriesStatus {
-  ONGOING
+// The show's own public release status — provider-derived (TMDb/Trakt),
+// never user-editable, never touched by watch activity. Distinct from
+// UserSeriesProgress.userStatus, which tracks THIS user's personal
+// relationship with a series. Defaults to UNKNOWN, not a confident guess:
+// see docs/status-model-plan.md §3 for why "ongoing until enriched" was a
+// real bug (every imported, never-enriched series claimed to be airing).
+enum ReleaseStatus {
+  UNKNOWN
+  RETURNING
   ENDED
-  CANCELED
+  CANCELLED
+  IN_PRODUCTION
 }
 
-// This user's personal progress through a series.
-enum ProgressStatus {
+// This user's personal relationship with a series — separate from the
+// series' own ReleaseStatus. Mostly user-controlled (WATCHLIST/PAUSED/
+// DROPPED) or auto-derived from watch activity + episode catalog completeness
+// (WATCHING/CAUGHT_UP/COMPLETED). See docs/status-model-plan.md §4 for the
+// full derivation rules and which values come from where.
+enum UserSeriesStatus {
+  UNKNOWN
+  WATCHLIST
   WATCHING
+  PAUSED
+  DROPPED
+  CAUGHT_UP
   COMPLETED
 }
 
@@ -50,22 +65,22 @@ model User {
 }
 
 model Series {
-  id            String       @id @default(uuid())
+  id            String        @id @default(uuid())
   title         String
   overview      String?
   posterUrl     String?
   // "Fanart"/backdrop-style wide image, distinct from posterUrl. Added for
   // Trakt enrichment — see docs/trakt-enrichment-plan.md §6.
   backdropUrl   String?
-  status        SeriesStatus @default(ONGOING)
+  releaseStatus ReleaseStatus @default(UNKNOWN)
   // Freeform bag for import-sourced fields with no dedicated column yet,
   // e.g. TV Time's internal tv_show_id. See docs/tvtime-data-audit.md §5.
   rawMetadata   Json?
   // Breadcrumb only (no relation) — which import run last touched this row.
   // See docs/mytv-prisma-schema-plan.md §3 for why this isn't a hard FK.
   importBatchId String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   seasons        Season[]
   progress       UserSeriesProgress[]
@@ -123,25 +138,28 @@ model Episode {
   @@unique([seasonId, episodeNumber])
 }
 
-// One row per (user, series). Tracks the user's overall progress and caches
-// the next episode to watch so /me/watch-next and the "mark watched" response
-// are cheap, deterministic reads instead of recomputed on every request.
+// One row per (user, series) the user has ANY relationship with — watchlisted,
+// watching, paused, dropped, caught up, or completed (docs/status-model-plan.md
+// §4 — no longer conditional on having watched something, unlike the original
+// design). Also caches the next episode to watch so /me/watch-next and the
+// "mark watched" response are cheap, deterministic reads instead of
+// recomputed on every request.
 model UserSeriesProgress {
-  id            String         @id @default(uuid())
+  id            String           @id @default(uuid())
   userId        String
   seriesId      String
-  status        ProgressStatus @default(WATCHING)
+  userStatus    UserSeriesStatus @default(UNKNOWN)
   lastWatchedAt DateTime?
   nextEpisodeId String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   series      Series   @relation(fields: [seriesId], references: [id], onDelete: Cascade)
   nextEpisode Episode? @relation("NextEpisode", fields: [nextEpisodeId], references: [id])
 
   @@unique([userId, seriesId])
-  @@index([userId, status, lastWatchedAt])
+  @@index([userId, userStatus, lastWatchedAt])
 }
 
 // A single watched-episode event. Unique per (user, episode) — re-watch
