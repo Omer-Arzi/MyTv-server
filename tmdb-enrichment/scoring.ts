@@ -168,3 +168,143 @@ export function detectAnimeNumberingRisk(input: AnimeRiskInput): boolean {
 
   return looksLikeAnime;
 }
+
+// docs/tmdb-matching-tuning-notes.md's real finding: an exact-title,
+// top-result match is often correct but can't be told apart, from score
+// alone, from a same-titled remake/reboot or a genuinely ambiguous pair of
+// candidates. This makes that check explicit and inspectable instead of
+// leaving it implicit in the ambiguity-gap math inside decideTier (which
+// only ever looks at the #2 candidate, and only once the top candidate
+// already clears the AUTO_MATCH threshold).
+export type CloseCompetitorKind = 'same_title_different_year' | 'near_exact_title' | 'score_gap';
+
+export interface CloseCompetitorCandidate {
+  tmdbId: string;
+  tmdbTitle: string;
+  tmdbYear: number | null;
+  confidenceScore: number;
+}
+
+export interface CloseCompetitorResult {
+  detected: boolean;
+  reason: string | null;
+  kind: CloseCompetitorKind | null;
+}
+
+const CLOSE_COMPETITOR_SCORE_GAP = 10;
+const NEAR_EXACT_TITLE_SIMILARITY = 0.9;
+
+export function detectCloseCompetitor(top: CloseCompetitorCandidate, others: CloseCompetitorCandidate[]): CloseCompetitorResult {
+  const topNormalized = normalizeTitle(top.tmdbTitle);
+
+  for (const other of others) {
+    const otherNormalized = normalizeTitle(other.tmdbTitle);
+
+    if (otherNormalized === topNormalized) {
+      if (other.tmdbYear !== top.tmdbYear) {
+        return {
+          detected: true,
+          kind: 'same_title_different_year',
+          reason: `candidate "${other.tmdbTitle}" (${other.tmdbYear ?? 'unknown year'}, tmdbId ${other.tmdbId}) has an identical title to the top candidate but a different year — possible remake/reboot ambiguity`,
+        };
+      }
+      return {
+        detected: true,
+        kind: 'near_exact_title',
+        reason: `candidate "${other.tmdbTitle}" (tmdbId ${other.tmdbId}) has an identical normalized title to the top candidate`,
+      };
+    }
+
+    const similarity = titleSimilarity(top.tmdbTitle, other.tmdbTitle);
+    if (similarity >= NEAR_EXACT_TITLE_SIMILARITY) {
+      return {
+        detected: true,
+        kind: 'near_exact_title',
+        reason: `candidate "${other.tmdbTitle}" (tmdbId ${other.tmdbId}) has a near-exact title match to the top candidate (similarity ${similarity.toFixed(2)})`,
+      };
+    }
+
+    const gap = Math.abs(top.confidenceScore - other.confidenceScore);
+    if (gap <= CLOSE_COMPETITOR_SCORE_GAP) {
+      return {
+        detected: true,
+        kind: 'score_gap',
+        reason: `candidate "${other.tmdbTitle}" (tmdbId ${other.tmdbId}) scores within ${CLOSE_COMPETITOR_SCORE_GAP} points of the top candidate (${other.confidenceScore} vs ${top.confidenceScore})`,
+      };
+    }
+  }
+
+  return { detected: false, reason: null, kind: null };
+}
+
+// docs/tmdb-matching-tuning-notes.md §3.1 — a preview-only, parallel
+// structural path to AUTO_MATCH that doesn't route through the absolute
+// score at all. This function only ever computes a *proposal*
+// (proposedTierAfterStructuralRule on the dry-run report); nothing calls it
+// as part of the real decideTier/apply path.
+export type StructuralTier = 'AUTO_MATCH' | 'NEEDS_REVIEW';
+
+export interface StructuralAutoMatchInput {
+  tier: MatchTier;
+  titleMatchType: TitleMatchType;
+  resultPosition: number;
+  watchedEpisodeCount: number;
+  tmdbTotalEpisodeCount: number;
+  animeNumberingRiskDetected: boolean;
+  closeCompetitorDetected: boolean;
+}
+
+export interface StructuralAutoMatchResult {
+  proposedTier: StructuralTier;
+  reason: string;
+}
+
+export function evaluateStructuralAutoMatch(input: StructuralAutoMatchInput): StructuralAutoMatchResult {
+  if (input.tier !== 'NEEDS_REVIEW') {
+    return {
+      proposedTier: 'NEEDS_REVIEW',
+      reason: `current tier is ${input.tier}, not NEEDS_REVIEW — the structural rule only proposes promoting NEEDS_REVIEW entries`,
+    };
+  }
+
+  if (input.titleMatchType !== 'exact') {
+    return { proposedTier: 'NEEDS_REVIEW', reason: `title match type is "${input.titleMatchType}", not exact` };
+  }
+
+  if (input.resultPosition !== 0) {
+    return { proposedTier: 'NEEDS_REVIEW', reason: `top candidate is at result position ${input.resultPosition}, not the top search result` };
+  }
+
+  if (input.watchedEpisodeCount > input.tmdbTotalEpisodeCount) {
+    return {
+      proposedTier: 'NEEDS_REVIEW',
+      reason: `watched episode count (${input.watchedEpisodeCount}) exceeds TMDb's known total (${input.tmdbTotalEpisodeCount}) — episode-count sanity check fails`,
+    };
+  }
+
+  if (input.watchedEpisodeCount !== input.tmdbTotalEpisodeCount) {
+    return {
+      proposedTier: 'NEEDS_REVIEW',
+      reason: `watched episode count (${input.watchedEpisodeCount}) is below TMDb's known total (${input.tmdbTotalEpisodeCount}) — still in progress, kept conservative for this first structural-rule pass`,
+    };
+  }
+
+  if (input.animeNumberingRiskDetected) {
+    return {
+      proposedTier: 'NEEDS_REVIEW',
+      reason: 'anime/long-running numbering risk detected — kept in review even though title, position, and episode count otherwise qualify',
+    };
+  }
+
+  if (input.closeCompetitorDetected) {
+    return {
+      proposedTier: 'NEEDS_REVIEW',
+      reason: 'a close competing candidate was detected — kept in review despite an exact title/position/episode-count match',
+    };
+  }
+
+  return {
+    proposedTier: 'AUTO_MATCH',
+    reason: 'exact title, top search result, no close competitor, no anime-numbering risk, and watched episode count exactly matches TMDb\'s known total',
+  };
+}

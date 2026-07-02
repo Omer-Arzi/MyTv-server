@@ -3,7 +3,7 @@ import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { TmdbClient } from './tmdb-client';
 import { runEnrichmentDryRun } from './enrichment-dry-run';
-import { buildEnrichmentReport, buildNeedsReview, writeDryRunReports } from './reports';
+import { buildDataQualityIssues, buildEnrichmentReport, buildNeedsReview, writeDryRunReports } from './reports';
 import { DEV_USER_ID } from '../src/common/constants';
 
 const DEFAULT_OUT_DIR = path.join(__dirname, 'output');
@@ -61,7 +61,8 @@ async function main() {
     result,
   );
   const needsReview = buildNeedsReview(result);
-  const batchDir = writeDryRunReports(options.outDir, result.importBatchId, enrichmentReport, needsReview);
+  const dataQualityIssues = buildDataQualityIssues(result);
+  const batchDir = writeDryRunReports(options.outDir, result.importBatchId, enrichmentReport, needsReview, dataQualityIssues);
 
   console.log(`\nDone. Reports written to ${batchDir}`);
   console.log(JSON.stringify((enrichmentReport as { summary: unknown }).summary, null, 2));

@@ -11,10 +11,25 @@
 
 import { ImportIssueSeverity, ImportStatus, Prisma, PrismaClient, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { TmdbClient, MAX_APPEND_TO_RESPONSE_ITEMS } from './tmdb-client';
-import { decideTier, extractTitleYearHint, scoreCandidates, detectAnimeNumberingRisk, ScoreBreakdown, TitleYearHint } from './scoring';
+import {
+  decideTier,
+  detectCloseCompetitor,
+  evaluateStructuralAutoMatch,
+  extractTitleYearHint,
+  scoreCandidates,
+  detectAnimeNumberingRisk,
+  CloseCompetitorResult,
+  ScoreBreakdown,
+  StructuralTier,
+  TitleYearHint,
+} from './scoring';
 import { getAppendedSeason, TmdbSeason, TmdbTvDetails, TmdbTvSearchResult } from './tmdb-types';
 import { mapTmdbStatusToReleaseStatus } from './release-status-mapping';
 import { proposeUserStatusAfterEnrichment } from '../src/common/derive-user-status';
+import { detectDuplicateTitleGroups, detectPlaceholderTitle, detectRemakeCollision, DataQualityIssueType } from './data-quality';
+
+const TOP_CANDIDATES_LIMIT = 5;
+const NO_CLOSE_COMPETITOR: CloseCompetitorResult = { detected: false, reason: null, kind: null };
 
 const BATCH_SOURCE = 'tmdb-enrichment';
 
@@ -33,6 +48,13 @@ export interface CandidateSummary {
   reasonBreakdown: ScoreBreakdown;
 }
 
+// Same shape as CandidateSummary, plus an explicit top-level resultPosition
+// (also present inside reasonBreakdown) so a reviewer/consumer can sort or
+// filter the top-5 list without digging into the breakdown.
+export interface TopCandidateSummary extends CandidateSummary {
+  resultPosition: number;
+}
+
 export interface AutoMatchCandidateReport {
   mytvSeriesId: string;
   mytvSeriesTitle: string;
@@ -40,6 +62,14 @@ export interface AutoMatchCandidateReport {
   watchedEpisodeCount: number;
   tmdbTotalEpisodeCount: number;
   animeNumberingRiskDetected: boolean;
+  // Candidate-visibility fields (docs/tmdb-matching-tuning-notes.md, the
+  // --limit=50 report finding): the top TMDb search results, not just the
+  // one that was chosen, plus whether another candidate is close enough to
+  // the top one to be a real ambiguity risk.
+  topCandidates: TopCandidateSummary[];
+  candidateCount: number;
+  closeCompetitorDetected: boolean;
+  closeCompetitorReason: string | null;
   // Preview-only (docs/status-model-plan.md §7a) — what userStatus would
   // become if this candidate were applied, computed but never written.
   currentUserStatus: UserSeriesStatus;
@@ -61,12 +91,28 @@ export interface NeedsReviewEntry {
   watchedEpisodeCount: number | null;
   tmdbTotalEpisodeCount: number | null;
   animeNumberingRiskDetected: boolean | null;
+  topCandidates: TopCandidateSummary[];
+  candidateCount: number;
+  closeCompetitorDetected: boolean;
+  closeCompetitorReason: string | null;
   currentUserStatus: UserSeriesStatus | null;
   proposedUserStatusAfterEnrichment: UserSeriesStatus | null;
   userStatusChangeReason: string | null;
   currentReleaseStatus: ReleaseStatus | null;
   tmdbRawStatus: string | null;
   proposedReleaseStatus: ReleaseStatus | null;
+  // docs/tmdb-matching-tuning-notes.md §3.1 — preview-only. What tier this
+  // entry would have under the proposed structural rule. Never changes real
+  // apply behavior; decideTier/the actual tier above are untouched.
+  proposedTierAfterStructuralRule: StructuralTier;
+  structuralRuleReason: string;
+}
+
+export interface DataQualityIssueReportEntry {
+  mytvSeriesId: string;
+  mytvSeriesTitle: string;
+  issueType: DataQualityIssueType;
+  message: string;
 }
 
 export interface EnrichmentDryRunResult {
@@ -74,6 +120,7 @@ export interface EnrichmentDryRunResult {
   seriesConsidered: number;
   autoMatchCandidates: AutoMatchCandidateReport[];
   needsReview: NeedsReviewEntry[];
+  dataQualityIssues: DataQualityIssueReportEntry[];
   apiCallCount: number;
   cacheHitCount: number;
 }
@@ -140,11 +187,26 @@ export async function runEnrichmentDryRun(
 
   const autoMatchCandidates: AutoMatchCandidateReport[] = [];
   const needsReview: NeedsReviewEntry[] = [];
+  const dataQualityIssues: DataQualityIssueReportEntry[] = [];
   const issues: Prisma.ImportIssueCreateManyInput[] = [];
+
+  function pushDataQualityIssue(seriesId: string, seriesTitle: string, issue: { type: DataQualityIssueType; message: string }) {
+    dataQualityIssues.push({ mytvSeriesId: seriesId, mytvSeriesTitle: seriesTitle, issueType: issue.type, message: issue.message });
+    issues.push({
+      importBatchId: batch.id,
+      severity: ImportIssueSeverity.WARNING,
+      relatedEntityType: 'Series',
+      relatedEntityId: seriesId,
+      message: `data quality (${issue.type}): ${issue.message}`,
+    });
+  }
 
   for (const s of series) {
     const hint = extractTitleYearHint(s.title);
     const watchedEpisodeCount = watchedCountBySeriesId.get(s.id) ?? 0;
+
+    const placeholderIssue = detectPlaceholderTitle(s.title);
+    if (placeholderIssue) pushDataQualityIssue(s.id, s.title, placeholderIssue);
 
     const searchResults = await getCachedOrFetch<TmdbTvSearchResult[]>(
       'search',
@@ -154,8 +216,20 @@ export async function runEnrichmentDryRun(
 
     const scored = scoreCandidates(hint, searchResults);
     const decision = decideTier(scored);
+    const candidateCount = scored.length;
+    const topCandidates = scored.slice(0, TOP_CANDIDATES_LIMIT).map((c) => ({ ...toCandidateSummary(c.result, c.breakdown), resultPosition: c.breakdown.resultPosition }));
+    const closeCompetitor = topCandidates.length > 1 ? detectCloseCompetitor(topCandidates[0], topCandidates.slice(1)) : NO_CLOSE_COMPETITOR;
 
     if (decision.tier === 'NO_MATCH') {
+      const structuralPreview = evaluateStructuralAutoMatch({
+        tier: decision.tier,
+        titleMatchType: decision.top?.breakdown.titleMatchType ?? 'fuzzy',
+        resultPosition: decision.top?.breakdown.resultPosition ?? -1,
+        watchedEpisodeCount,
+        tmdbTotalEpisodeCount: 0,
+        animeNumberingRiskDetected: false,
+        closeCompetitorDetected: closeCompetitor.detected,
+      });
       needsReview.push({
         mytvSeriesId: s.id,
         mytvSeriesTitle: s.title,
@@ -165,12 +239,18 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount: null,
         animeNumberingRiskDetected: null,
+        topCandidates,
+        candidateCount,
+        closeCompetitorDetected: closeCompetitor.detected,
+        closeCompetitorReason: closeCompetitor.reason,
         currentUserStatus: null,
         proposedUserStatusAfterEnrichment: null,
         userStatusChangeReason: null,
         currentReleaseStatus: null,
         tmdbRawStatus: null,
         proposedReleaseStatus: null,
+        proposedTierAfterStructuralRule: structuralPreview.proposedTier,
+        structuralRuleReason: structuralPreview.reason,
       });
       issues.push({
         importBatchId: batch.id,
@@ -201,6 +281,16 @@ export async function runEnrichmentDryRun(
       originCountry: show.origin_country,
     });
 
+    // Re-derive topCandidates/closeCompetitor now that the chosen candidate's
+    // full show details (name/year) are known — the pre-fetch versions above
+    // used raw search-result fields for every position, including the one
+    // that turned out to be the top match.
+    const enrichedTopCandidates = topCandidates.map((c) =>
+      c.tmdbId === candidateSummary.tmdbId ? { ...candidateSummary, resultPosition: c.resultPosition } : c,
+    );
+    const enrichedCloseCompetitor =
+      enrichedTopCandidates.length > 1 ? detectCloseCompetitor(enrichedTopCandidates[0], enrichedTopCandidates.slice(1)) : NO_CLOSE_COMPETITOR;
+
     // Structured release-status preview fields, not just embedded in
     // userStatusChangeReason prose — see docs/tmdb-matching-tuning-notes.md
     // and docs/status-model-plan.md §7a. Still preview-only: never written
@@ -228,6 +318,17 @@ export async function runEnrichmentDryRun(
       reason = `episode-count sanity check failed: MyTv has ${watchedEpisodeCount} watched episodes for "${s.title}" but TMDb's "${show.name}" only has ${tmdbTotalEpisodeCount} known episodes${animeNumberingRiskDetected ? ' (anime-like long-running numbering risk detected — this mismatch may be a numbering-convention difference rather than a wrong match)' : ''}`;
     }
 
+    const remakeCollisionIssue = detectRemakeCollision({
+      mytvSeriesTitle: s.title,
+      chosenTmdbTitle: candidateSummary.tmdbTitle,
+      chosenTmdbYear: candidateSummary.tmdbYear,
+      watchedEpisodeCount,
+      tmdbTotalEpisodeCount,
+      animeNumberingRiskDetected,
+      closeCompetitorKind: enrichedCloseCompetitor.kind,
+    });
+    if (remakeCollisionIssue) pushDataQualityIssue(s.id, s.title, remakeCollisionIssue);
+
     if (tier === 'AUTO_MATCH') {
       autoMatchCandidates.push({
         mytvSeriesId: s.id,
@@ -236,6 +337,10 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount,
         animeNumberingRiskDetected,
+        topCandidates: enrichedTopCandidates,
+        candidateCount,
+        closeCompetitorDetected: enrichedCloseCompetitor.detected,
+        closeCompetitorReason: enrichedCloseCompetitor.reason,
         currentUserStatus,
         proposedUserStatusAfterEnrichment: proposedUserStatus,
         userStatusChangeReason,
@@ -244,6 +349,15 @@ export async function runEnrichmentDryRun(
         proposedReleaseStatus,
       });
     } else {
+      const structuralPreview = evaluateStructuralAutoMatch({
+        tier,
+        titleMatchType: top.breakdown.titleMatchType,
+        resultPosition: top.breakdown.resultPosition,
+        watchedEpisodeCount,
+        tmdbTotalEpisodeCount,
+        animeNumberingRiskDetected,
+        closeCompetitorDetected: enrichedCloseCompetitor.detected,
+      });
       needsReview.push({
         mytvSeriesId: s.id,
         mytvSeriesTitle: s.title,
@@ -253,12 +367,18 @@ export async function runEnrichmentDryRun(
         watchedEpisodeCount,
         tmdbTotalEpisodeCount,
         animeNumberingRiskDetected,
+        topCandidates: enrichedTopCandidates,
+        candidateCount,
+        closeCompetitorDetected: enrichedCloseCompetitor.detected,
+        closeCompetitorReason: enrichedCloseCompetitor.reason,
         currentUserStatus,
         proposedUserStatusAfterEnrichment: proposedUserStatus,
         userStatusChangeReason,
         currentReleaseStatus,
         tmdbRawStatus,
         proposedReleaseStatus,
+        proposedTierAfterStructuralRule: structuralPreview.proposedTier,
+        structuralRuleReason: structuralPreview.reason,
       });
       issues.push({
         importBatchId: batch.id,
@@ -266,6 +386,21 @@ export async function runEnrichmentDryRun(
         relatedEntityType: 'Series',
         relatedEntityId: s.id,
         message: `TMDb match for "${s.title}" needs review: ${reason}`,
+      });
+    }
+  }
+
+  // Cross-series check, run once after the per-series loop (docs/tmdb-matching-tuning-notes.md,
+  // the --limit=50 report finding): MyTv Series rows that share a bare title
+  // but differ on year suffix, e.g. "Avatar: The Last Airbender" and
+  // "Avatar: The Last Airbender (2021)" — a likely TV Time dedup artifact,
+  // not something TMDb matching can resolve on its own.
+  for (const group of detectDuplicateTitleGroups(series.map((s) => ({ id: s.id, title: s.title })))) {
+    for (const member of group.members) {
+      const siblings = group.members.filter((m) => m.id !== member.id).map((m) => `"${m.title}"`).join(', ');
+      pushDataQualityIssue(member.id, member.title, {
+        type: 'DUPLICATE_TITLE_DIFFERENT_YEAR_SUFFIX',
+        message: `"${member.title}" shares a normalized title with ${siblings} — likely duplicate/mis-year-suffixed entries for the same show. Do not auto-merge; review manually.`,
       });
     }
   }
@@ -284,6 +419,7 @@ export async function runEnrichmentDryRun(
     seriesConsidered: series.length,
     autoMatchCandidates,
     needsReview,
+    dataQualityIssues,
     apiCallCount: tmdb.requestCount,
     cacheHitCount,
   };

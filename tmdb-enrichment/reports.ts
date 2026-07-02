@@ -21,7 +21,11 @@ export interface DryRunReportMeta {
 // UserSeriesProgress. Same idea for releaseStatus, as real structured
 // fields rather than only embedded in userStatusChangeReason prose —
 // currentReleaseStatus/tmdbRawStatus/proposedReleaseStatus. Preview only:
-// nothing here is written to Series.releaseStatus.
+// nothing here is written to Series.releaseStatus. Also includes candidate
+// visibility (docs/tmdb-matching-tuning-notes.md, --limit=50 report
+// finding): topCandidates (up to 5), candidateCount, and
+// closeCompetitorDetected/closeCompetitorReason — never just the one
+// chosen candidate.
 export function buildEnrichmentReport(meta: DryRunReportMeta, result: EnrichmentDryRunResult) {
   return {
     importBatchId: result.importBatchId,
@@ -36,6 +40,11 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
       needsReviewCount: result.needsReview.filter((n) => n.tier === 'NEEDS_REVIEW').length,
       noMatchCount: result.needsReview.filter((n) => n.tier === 'NO_MATCH').length,
       animeNumberingRiskCount: result.autoMatchCandidates.filter((c) => c.animeNumberingRiskDetected).length,
+      dataQualityIssueCount: result.dataQualityIssues.length,
+      // Preview-only count of NEEDS_REVIEW entries the proposed structural
+      // rule (docs/tmdb-matching-tuning-notes.md §3.1) would promote — never
+      // applied, purely informational.
+      structuralAutoMatchProposedCount: result.needsReview.filter((n) => n.tier === 'NEEDS_REVIEW' && n.proposedTierAfterStructuralRule === 'AUTO_MATCH').length,
       tmdbApiCallCount: result.apiCallCount,
       cacheHitCount: result.cacheHitCount,
     },
@@ -50,6 +59,10 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
       watchedEpisodeCount: c.watchedEpisodeCount,
       tmdbTotalEpisodeCount: c.tmdbTotalEpisodeCount,
       animeNumberingRiskDetected: c.animeNumberingRiskDetected,
+      topCandidates: c.topCandidates,
+      candidateCount: c.candidateCount,
+      closeCompetitorDetected: c.closeCompetitorDetected,
+      closeCompetitorReason: c.closeCompetitorReason,
       currentUserStatus: c.currentUserStatus,
       proposedUserStatusAfterEnrichment: c.proposedUserStatusAfterEnrichment,
       userStatusChangeReason: c.userStatusChangeReason,
@@ -62,7 +75,11 @@ export function buildEnrichmentReport(meta: DryRunReportMeta, result: Enrichment
 
 // tmdb-needs-review.json — ambiguous/low-confidence/no-match/downgraded
 // entries. Same shape as trakt-needs-review.json so a future combined
-// reviewer tool can treat both providers identically.
+// reviewer tool can treat both providers identically. Also carries the
+// same candidate-visibility fields as the auto-match report, plus the
+// preview-only proposedTierAfterStructuralRule/structuralRuleReason
+// (docs/tmdb-matching-tuning-notes.md §3.1) — never applied, just a preview
+// of what the proposed structural rule would decide for this entry.
 export function buildNeedsReview(result: EnrichmentDryRunResult) {
   return result.needsReview.map((entry) => ({
     mytvSeriesId: entry.mytvSeriesId,
@@ -81,21 +98,49 @@ export function buildNeedsReview(result: EnrichmentDryRunResult) {
     watchedEpisodeCount: entry.watchedEpisodeCount,
     tmdbTotalEpisodeCount: entry.tmdbTotalEpisodeCount,
     animeNumberingRiskDetected: entry.animeNumberingRiskDetected,
+    topCandidates: entry.topCandidates,
+    candidateCount: entry.candidateCount,
+    closeCompetitorDetected: entry.closeCompetitorDetected,
+    closeCompetitorReason: entry.closeCompetitorReason,
     currentUserStatus: entry.currentUserStatus,
     proposedUserStatusAfterEnrichment: entry.proposedUserStatusAfterEnrichment,
     userStatusChangeReason: entry.userStatusChangeReason,
     currentReleaseStatus: entry.currentReleaseStatus,
     tmdbRawStatus: entry.tmdbRawStatus,
     proposedReleaseStatus: entry.proposedReleaseStatus,
+    proposedTierAfterStructuralRule: entry.proposedTierAfterStructuralRule,
+    structuralRuleReason: entry.structuralRuleReason,
   }));
 }
 
-export function writeDryRunReports(outDir: string, importBatchId: string, enrichmentReport: unknown, needsReview: unknown) {
+// tmdb-data-quality-issues.json — dedicated dry-run cleanup section
+// (docs/tmdb-matching-tuning-notes.md, --limit=50 report finding):
+// placeholder/error titles, suspected remake/reboot collisions, and
+// duplicate/mis-year-suffixed MyTv Series rows. Purely informational —
+// nothing here deletes or modifies a Series; these are also mirrored as
+// ImportIssue rows (severity WARNING) for the same batch.
+export function buildDataQualityIssues(result: EnrichmentDryRunResult) {
+  return result.dataQualityIssues.map((issue) => ({
+    mytvSeriesId: issue.mytvSeriesId,
+    mytvSeriesTitle: issue.mytvSeriesTitle,
+    issueType: issue.issueType,
+    message: issue.message,
+  }));
+}
+
+export function writeDryRunReports(
+  outDir: string,
+  importBatchId: string,
+  enrichmentReport: unknown,
+  needsReview: unknown,
+  dataQualityIssues: unknown,
+) {
   const batchDir = path.join(outDir, importBatchId);
   mkdirSync(batchDir, { recursive: true });
 
   writeFileSync(path.join(batchDir, 'tmdb-enrichment-report.json'), JSON.stringify(enrichmentReport, null, 2));
   writeFileSync(path.join(batchDir, 'tmdb-needs-review.json'), JSON.stringify(needsReview, null, 2));
+  writeFileSync(path.join(batchDir, 'tmdb-data-quality-issues.json'), JSON.stringify(dataQualityIssues, null, 2));
 
   return batchDir;
 }

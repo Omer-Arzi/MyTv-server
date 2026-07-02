@@ -1,4 +1,4 @@
-import { decideTier, detectAnimeNumberingRisk, parseYearFromDate, scoreCandidates } from '../scoring';
+import { decideTier, detectAnimeNumberingRisk, detectCloseCompetitor, evaluateStructuralAutoMatch, parseYearFromDate, scoreCandidates } from '../scoring';
 import { TmdbTvSearchResult } from '../tmdb-types';
 
 function result(name: string, firstAirDate: string | null, id = 1): TmdbTvSearchResult {
@@ -121,5 +121,102 @@ describe('detectAnimeNumberingRisk', () => {
     // TMDb might report fewer episodes than we've actually watched (a
     // mismatch that's itself informative) — still counts as long-running.
     expect(detectAnimeNumberingRisk({ watchedEpisodeCount: 150, tmdbTotalEpisodeCount: 10, originalLanguage: 'ja' })).toBe(true);
+  });
+});
+
+describe('detectCloseCompetitor', () => {
+  const top = { tmdbId: '1', tmdbTitle: 'Avatar: The Last Airbender', tmdbYear: 2024, confidenceScore: 80 };
+
+  it('is not detected when there are no other candidates', () => {
+    expect(detectCloseCompetitor(top, [])).toEqual({ detected: false, reason: null, kind: null });
+  });
+
+  it('is not detected when other candidates are clearly different and far apart in score', () => {
+    const others = [{ tmdbId: '2', tmdbTitle: 'Completely Unrelated Show', tmdbYear: 1998, confidenceScore: 30 }];
+    expect(detectCloseCompetitor(top, others).detected).toBe(false);
+  });
+
+  it('detects a same-titled candidate with a different year as a remake/reboot ambiguity', () => {
+    const others = [{ tmdbId: '2', tmdbTitle: 'Avatar: The Last Airbender', tmdbYear: 2005, confidenceScore: 78 }];
+    const result = detectCloseCompetitor(top, others);
+
+    expect(result.detected).toBe(true);
+    expect(result.kind).toBe('same_title_different_year');
+    expect(result.reason).toContain('different year');
+  });
+
+  it('detects a near-exact (but not identical) title as a close competitor', () => {
+    const others = [{ tmdbId: '2', tmdbTitle: 'Avatar The Last Airbender', tmdbYear: 2024, confidenceScore: 40 }];
+    const result = detectCloseCompetitor(top, others);
+
+    expect(result.detected).toBe(true);
+    expect(result.kind).toBe('near_exact_title');
+  });
+
+  it('detects an unrelated-titled candidate within 10 confidence points as a close competitor', () => {
+    const others = [{ tmdbId: '2', tmdbTitle: 'A Totally Different Show', tmdbYear: 2010, confidenceScore: 72 }];
+    const result = detectCloseCompetitor(top, others);
+
+    expect(result.detected).toBe(true);
+    expect(result.kind).toBe('score_gap');
+  });
+
+  it('is not detected when the score gap exceeds 10 points and titles are unrelated', () => {
+    const others = [{ tmdbId: '2', tmdbTitle: 'A Totally Different Show', tmdbYear: 2010, confidenceScore: 69 }];
+    expect(detectCloseCompetitor(top, others).detected).toBe(false);
+  });
+});
+
+describe('evaluateStructuralAutoMatch', () => {
+  const baseInput = {
+    tier: 'NEEDS_REVIEW' as const,
+    titleMatchType: 'exact' as const,
+    resultPosition: 0,
+    watchedEpisodeCount: 25,
+    tmdbTotalEpisodeCount: 25,
+    animeNumberingRiskDetected: false,
+    closeCompetitorDetected: false,
+  };
+
+  it('proposes AUTO_MATCH when every condition passes', () => {
+    const result = evaluateStructuralAutoMatch(baseInput);
+    expect(result.proposedTier).toBe('AUTO_MATCH');
+  });
+
+  it('keeps NEEDS_REVIEW when the current tier is not NEEDS_REVIEW', () => {
+    expect(evaluateStructuralAutoMatch({ ...baseInput, tier: 'AUTO_MATCH' }).proposedTier).toBe('NEEDS_REVIEW');
+    expect(evaluateStructuralAutoMatch({ ...baseInput, tier: 'NO_MATCH' }).proposedTier).toBe('NEEDS_REVIEW');
+  });
+
+  it('keeps NEEDS_REVIEW when the title match is not exact', () => {
+    expect(evaluateStructuralAutoMatch({ ...baseInput, titleMatchType: 'fuzzy' }).proposedTier).toBe('NEEDS_REVIEW');
+  });
+
+  it('keeps NEEDS_REVIEW when the top candidate is not the top search result', () => {
+    expect(evaluateStructuralAutoMatch({ ...baseInput, resultPosition: 1 }).proposedTier).toBe('NEEDS_REVIEW');
+  });
+
+  it('blocks structural auto-match when watched episode count exceeds the TMDb total (watched > total)', () => {
+    const result = evaluateStructuralAutoMatch({ ...baseInput, watchedEpisodeCount: 61, tmdbTotalEpisodeCount: 15 });
+    expect(result.proposedTier).toBe('NEEDS_REVIEW');
+    expect(result.reason).toContain('exceeds');
+  });
+
+  it('keeps watched < total in NEEDS_REVIEW for now, even though nothing else is wrong', () => {
+    const result = evaluateStructuralAutoMatch({ ...baseInput, watchedEpisodeCount: 5, tmdbTotalEpisodeCount: 12 });
+    expect(result.proposedTier).toBe('NEEDS_REVIEW');
+    expect(result.reason).toContain('still in progress');
+  });
+
+  it('blocks structural auto-match when anime/long-running numbering risk is detected, even if everything else passes', () => {
+    const result = evaluateStructuralAutoMatch({ ...baseInput, watchedEpisodeCount: 293, tmdbTotalEpisodeCount: 293, animeNumberingRiskDetected: true });
+    expect(result.proposedTier).toBe('NEEDS_REVIEW');
+    expect(result.reason).toContain('anime');
+  });
+
+  it('blocks structural auto-match when a close competitor was detected', () => {
+    const result = evaluateStructuralAutoMatch({ ...baseInput, closeCompetitorDetected: true });
+    expect(result.proposedTier).toBe('NEEDS_REVIEW');
+    expect(result.reason).toContain('close competing candidate');
   });
 });
