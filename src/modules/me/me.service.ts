@@ -49,19 +49,6 @@ export class MeService {
     };
   }
 
-  // docs/status-model-plan.md §8: DROPPED/PAUSED/WATCHLIST are explicitly
-  // not-actively-engaged, COMPLETED/UNKNOWN have nothing to prompt. CAUGHT_UP
-  // is left in on purpose rather than excluded — it structurally can never
-  // have a nextEpisodeId, so the nextEpisodeId filter below already excludes
-  // it; excluding it here too would be redundant, not wrong.
-  private static readonly WATCH_NEXT_EXCLUDED_STATUSES: UserSeriesStatus[] = [
-    UserSeriesStatus.DROPPED,
-    UserSeriesStatus.PAUSED,
-    UserSeriesStatus.COMPLETED,
-    UserSeriesStatus.WATCHLIST,
-    UserSeriesStatus.UNKNOWN,
-  ];
-
   // docs/status-model-plan.md §8: an INCLUDE-list, not an exclude-list, so
   // this section can never silently start showing a future userStatus value
   // without a deliberate decision to add it here. WATCHING is the only value
@@ -74,11 +61,22 @@ export class MeService {
   // it here would be redundant; revisit if that turns out to be poor UX.
   private static readonly STALE_INCLUDED_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP];
 
+  // docs/status-model-plan.md §8's literal query: userStatus = 'watching'
+  // AND nextEpisodeId IS NOT NULL — an exact-match include, not an
+  // exclude-list. This used to be an exclude-list that happened to produce
+  // the same result only because CAUGHT_UP could never have a non-null
+  // nextEpisodeId; the next-episode-backfill can now find a newly-available
+  // episode for a CAUGHT_UP row, and moves it to WATCHING when it does
+  // (caught_up is only a valid state while nextEpisodeId is null — §4), so
+  // that invariant is enforced at the write side, not relied on here.
+  // Matching the spec's literal equality check means this can't silently
+  // regress if a future write path ever produces a CAUGHT_UP-with-
+  // nextEpisodeId row again.
   async getWatchNext(userId: string): Promise<WatchNextItemDto[]> {
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
-        userStatus: { notIn: MeService.WATCH_NEXT_EXCLUDED_STATUSES },
+        userStatus: UserSeriesStatus.WATCHING,
         nextEpisodeId: { not: null },
       },
       orderBy: { lastWatchedAt: 'desc' },
