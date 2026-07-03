@@ -8,6 +8,7 @@ export function toSeriesSummary(series: Series): SeriesSummaryDto {
     title: series.title,
     overview: series.overview,
     posterUrl: series.posterUrl,
+    backdropUrl: series.backdropUrl,
     releaseStatus: series.releaseStatus,
   };
 }
@@ -22,5 +23,6 @@ export function toEpisodeSummary(episode: Episode & { season: Season }): Episode
     overview: episode.overview,
     airDate: episode.airDate,
     runtimeMinutes: episode.runtimeMinutes,
+    imageUrl: episode.imageUrl,
   };
 }

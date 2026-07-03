@@ -8,11 +8,24 @@ export class SeriesSummaryDto {
   @ApiProperty({ example: 'The Great Voyage' })
   title: string;
 
-  @ApiPropertyOptional({ example: 'A crew explores the outer rim of known space.' })
+  @ApiPropertyOptional({ example: 'A crew explores the outer rim of known space.', nullable: true })
   overview?: string | null;
 
-  @ApiPropertyOptional({ example: 'https://images.example.com/great-voyage/poster.jpg' })
+  @ApiPropertyOptional({
+    example: 'https://image.tmdb.org/t/p/original/great-voyage-poster.jpg',
+    nullable: true,
+    description: 'Portrait poster art. Null until enrichment provides one — render a placeholder.',
+  })
   posterUrl?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'https://image.tmdb.org/t/p/original/great-voyage-backdrop.jpg',
+    nullable: true,
+    description:
+      'Wide "fanart"-style backdrop image, distinct from posterUrl — suited to a detail-screen hero header. ' +
+      'Null until enrichment provides one.',
+  })
+  backdropUrl?: string | null;
 
   @ApiProperty({
     enum: ReleaseStatus,

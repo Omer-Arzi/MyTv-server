@@ -20,12 +20,19 @@ export class EpisodeSummaryDto {
   })
   title?: string | null;
 
-  @ApiPropertyOptional({ example: 'The crew loses contact with mission control.' })
+  @ApiPropertyOptional({ example: 'The crew loses contact with mission control.', nullable: true })
   overview?: string | null;
 
-  @ApiPropertyOptional({ example: '2024-03-10T00:00:00.000Z' })
+  @ApiPropertyOptional({ example: '2024-03-10T00:00:00.000Z', nullable: true })
   airDate?: Date | null;
 
-  @ApiPropertyOptional({ example: 42 })
+  @ApiPropertyOptional({ example: 42, nullable: true })
   runtimeMinutes?: number | null;
+
+  @ApiPropertyOptional({
+    example: 'https://image.tmdb.org/t/p/original/into-the-dark-still.jpg',
+    nullable: true,
+    description: 'Episode still/thumbnail image. Null until enrichment provides one — render a placeholder.',
+  })
+  imageUrl?: string | null;
 }
