@@ -1,5 +1,5 @@
-import { Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
-import { ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBody, ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types';
 import { WatchlistService } from '../watchlist/watchlist.service';
@@ -8,6 +8,8 @@ import { SeriesService } from './series.service';
 import { SeriesDetailDto } from './dto/series-detail.dto';
 import { SeriesListPageDto } from './dto/series-list-page.dto';
 import { SeriesListQueryDto } from './dto/series-list-query.dto';
+import { UpdateSeriesStatusDto } from './dto/update-series-status.dto';
+import { UpdateSeriesStatusResponseDto } from './dto/update-series-status-response.dto';
 
 @ApiTags('series')
 @Controller('series')
@@ -46,6 +48,28 @@ export class SeriesController {
   @ApiNotFoundResponse({ description: 'Series not found' })
   getDetail(@CurrentUser() user: RequestUser, @Param('seriesId') seriesId: string): Promise<SeriesDetailDto> {
     return this.seriesService.getDetail(user.id, seriesId);
+  }
+
+  @Patch(':seriesId/status')
+  @ApiOperation({
+    summary: 'Manually set my personal status for a series',
+    description:
+      'Only WATCHING, PAUSED, DROPPED, and WATCHLIST can be set directly — COMPLETED and CAUGHT_UP are always ' +
+      'auto-derived (400 if requested). DROPPED/PAUSED always clear nextEpisodeId. WATCHING re-derives ' +
+      'nextEpisodeId as the first unwatched episode in this user\'s currently-known episode catalog (may come ' +
+      'back null if the catalog is empty or everything currently known is watched). WATCHLIST also ensures a ' +
+      'WatchlistItem exists, so GET /watchlist stays consistent.',
+  })
+  @ApiParam({ name: 'seriesId', description: 'Series id', example: '3f6b1e2a-8c1d-4b2a-9e2e-111111111111' })
+  @ApiBody({ type: UpdateSeriesStatusDto })
+  @ApiOkResponse({ type: UpdateSeriesStatusResponseDto })
+  @ApiNotFoundResponse({ description: 'Series not found' })
+  updateStatus(
+    @CurrentUser() user: RequestUser,
+    @Param('seriesId') seriesId: string,
+    @Body() body: UpdateSeriesStatusDto,
+  ): Promise<UpdateSeriesStatusResponseDto> {
+    return this.seriesService.updateStatus(user.id, seriesId, body.userStatus);
   }
 
   @Post(':seriesId/watchlist')

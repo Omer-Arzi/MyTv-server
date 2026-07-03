@@ -119,9 +119,24 @@ Full request/response schemas, including field-level descriptions and examples, 
 
 - **Purpose**: full series-detail screen in one call — metadata, this user's status, next episode, and every season/episode with per-episode watch state.
 - **Request params**: `seriesId` (path).
-- **Response**: `SeriesDetailDto` — `id`, `title`, `overview`, `posterUrl`, `backdropUrl`, `releaseStatus`, `userStatus`, `nextEpisode` (nullable summary), `seasons` (array of `{ seasonNumber, title, episodes[] }`, episodes ordered within each season), `externalIds` (nullable — `tmdbId`/`traktId`/`imdbId`, null if no enrichment match yet). Each episode in `seasons[].episodes[]` carries the base episode fields plus `watched` (boolean), `watchedAt` (nullable), `note` (nullable).
-- **Mobile UI usage**: hero header from `backdropUrl`/`title`/`overview`/`releaseStatus`, a "watch next" call-to-action from `nextEpisode`, then a season-by-season episode list (checkmark or watched-state styling per episode from `watched`/`watchedAt`, note icon if `note` is non-null).
-- **Known limitations**: `externalIds.imdbId` is currently always `null` — TMDb's response includes it, but the enrichment apply step doesn't write it to this column yet (a real, known gap, not intentionally withheld). `traktId` is always `null` — no Trakt apply step exists. No episode-level actions beyond what `POST /episodes/:episodeId/watch` already provides (no "mark whole season watched," no per-episode note editing from this response — notes are edited via `PATCH /episode-watches/:watchId/note`, which needs a `watchId` this endpoint doesn't currently expose per-episode — see project-wide gap below).
+- **Response**: `SeriesDetailDto` — `id`, `title`, `overview`, `posterUrl`, `backdropUrl`, `releaseStatus`, `userStatus`, `nextEpisode` (nullable summary), `seasons` (array of `{ seasonNumber, title, episodes[] }`, episodes ordered within each season), `externalIds` (nullable — `tmdbId`/`traktId`/`imdbId`, null if no enrichment match yet). Each episode in `seasons[].episodes[]` carries the base episode fields plus `watched` (boolean), `watchedAt` (nullable), `note` (nullable), and **`episodeWatchId`** (nullable — the `EpisodeWatch` id when watched, for editing that watch's note directly, see `PATCH /episode-watches/:watchId/note` below).
+- **Mobile UI usage**: hero header from `backdropUrl`/`title`/`overview`/`releaseStatus`, a "watch next" call-to-action from `nextEpisode`, then a season-by-season episode list (checkmark or watched-state styling per episode from `watched`/`watchedAt`, note icon if `note` is non-null, tapping a watched episode's note icon uses its `episodeWatchId` directly — no extra lookup needed).
+- **Known limitations**: `externalIds.imdbId` is currently always `null` — TMDb's response includes it, but the enrichment apply step doesn't write it to this column yet (a real, known gap, not intentionally withheld). `traktId` is always `null` — no Trakt apply step exists. No episode-level actions beyond what `POST /episodes/:episodeId/watch` already provides (no "mark whole season watched," no "unmark watched" — see the Undo section below).
+
+### `PATCH /series/:seriesId/status`
+
+- **Purpose**: manually override the current user's personal status for a series — pause, drop, re-watchlist, or resume watching, independent of any watch/watchlist action.
+- **Request params**: `seriesId` (path). **Body**: `{ userStatus: "WATCHING" | "PAUSED" | "DROPPED" | "WATCHLIST" }`.
+- **Response**: `UpdateSeriesStatusResponseDto` — `{ seriesId, userStatus, nextEpisode: EpisodeSummaryDto | null }`.
+- **Rules** (see `docs/status-model-plan.md` §4/§7 for the underlying model):
+  - `COMPLETED` and `CAUGHT_UP` **cannot** be set through this endpoint — both are always auto-derived from watch activity + the episode catalog, never a direct user choice. Requesting either (or `UNKNOWN`) is rejected with `400` at the validation layer, before any database access.
+  - `DROPPED` and `PAUSED` always clear `nextEpisodeId` to `null` — neither state implies "here's what to watch next."
+  - `WATCHING` re-derives `nextEpisodeId` as the first unwatched episode (by `seasonNumber`/`episodeNumber` order) in this user's *currently-known* episode catalog. This is best-effort: for a series that hasn't been TMDb-matched yet, MyTv may only know about episodes the user already watched, so `nextEpisode` can legitimately come back `null` even though more episodes almost certainly exist. The response's `nextEpisode` reflects exactly what was set — check it before assuming there's something to watch next.
+  - `WATCHLIST` also upserts a `WatchlistItem` row, so `GET /watchlist` reflects a status set here (not just one set via `POST /series/:seriesId/watchlist`) — matching `docs/status-model-plan.md` §4's "keep both tables in sync" design. It is never *removed* automatically by this endpoint (moving to `WATCHING`/`PAUSED`/`DROPPED` does not delete an existing `WatchlistItem` — same rule the dedicated watchlist endpoints already follow; removal is always an explicit `DELETE /series/:seriesId/watchlist`).
+  - Any current status may transition to any of the four allowed target statuses (e.g. `COMPLETED` → `WATCHLIST` for "I want to rewatch this" is allowed) — the restriction is only ever on the *target* value, never the current one.
+  - Creates a `UserSeriesProgress` row if none exists yet (e.g. explicitly marking a never-touched series `DROPPED`).
+- **Mobile UI usage**: a status menu/action sheet on the series-detail screen ("Pause," "Drop," "Move to Watchlist," "Resume Watching"). Use the response's `nextEpisode` to immediately update a "watch next" card without a follow-up `GET /series/:id` call.
+- **Known limitations**: no bulk/multi-series status update. The re-derived `nextEpisode` on `WATCHING` doesn't reset `lastWatchedAt` — that field only ever changes via an actual watch (`POST /episodes/:episodeId/watch`), so a resumed series' "last watched" timestamp stays exactly as stale as it was before this call.
 
 ### `POST /episodes/:episodeId/watch`
 
@@ -136,15 +151,24 @@ Full request/response schemas, including field-level descriptions and examples, 
 - **Purpose**: add or replace the note on a specific watched episode.
 - **Request params**: `watchId` (path, the `EpisodeWatch` id — not the episode id). **Body**: `{ text: string }` (1–2000 chars).
 - **Response**: `EpisodeWatchDto` — `id`, `watchedAt`, `note`, `episode`.
-- **Mobile UI usage**: a note/journal field on a watched-episode's detail view or the recently-watched feed.
-- **Known limitations**: requires the `EpisodeWatch` id, which the client must have gotten from a prior response (`POST /episodes/:id/watch`'s `watch.id`, or `GET /me/recently-watched`'s `watchId`) — `GET /series/:id`'s per-episode watch state does not currently include this id, so a client can't jump straight from the series-detail screen to editing a note without going through recently-watched first (the same gap noted under `GET /series/:id` above). No delete-note endpoint — clearing a note requires sending an update (not currently supported, since `text` must be non-empty).
+- **Mobile UI usage**: a note/journal field on a watched-episode's detail view, the recently-watched feed, or (now) the series-detail screen directly via each episode's `episodeWatchId`.
+- **Known limitations**: no delete-note endpoint — clearing a note requires sending an update (not currently supported, since `text` must be non-empty).
+
+## Planned: undo / unmark watched (not implemented)
+
+`POST /episodes/:episodeId/watch` has no inverse. This is the most visible remaining gap in the swipe-to-watch flow described above, so it's worth spelling out the shape of the eventual fix rather than leaving it as a one-line "not available yet" bullet:
+
+- **Why it matters.** The swipe-card interaction is exactly the kind of gesture users mis-fire — a slightly-too-far swipe on the wrong card, a double-tap, or swiping before realizing they meant a different episode. Today that mistake is permanent from the client's perspective: the episode is watched, `userStatus`/`nextEpisodeId` have already moved on, and there's no way back except manually re-navigating and re-marking things (which doesn't even undo a status change that happened to land on `CAUGHT_UP`/`COMPLETED`). For a gesture-driven mobile UI in particular, "undo" is closer to a correctness requirement than a nice-to-have — swipe interfaces without it train users to swipe hesitantly, which undermines the whole point of the interaction.
+- **What data would need to be restored**, per `EpisodeWatch` row deleted:
+  - The `EpisodeWatch` row itself (and its `EpisodeNote`, if any — cascades on delete today, which is correct for a real removal, but means undo has to restore both together, not just the watch).
+  - `UserSeriesProgress.nextEpisodeId` and `userStatus` for that series, recomputed as if the watch had never happened — not simply "set back to whatever it was a moment ago," because another watch could have already changed it since (e.g. a rapid double-swipe watching two episodes, then undoing only the second). The safe version of this is "recompute from the current watch state minus this one episode," using the same `deriveUserStatusFromNextEpisode` derivation already used everywhere else, not a naive snapshot/restore.
+  - `UserSeriesProgress.lastWatchedAt` — needs to fall back to the *previous* most-recent watch across the whole series, not just get cleared, which means it can't be read off the row being undone; it has to be recomputed from the remaining `EpisodeWatch` history.
+- **Why it's postponed.** The correctness of "recompute, don't snapshot" above is the real reason this isn't a same-day addition: get it wrong and undo silently corrupts `userStatus`/`nextEpisodeId` in a way that's much harder to notice than simply not having undo at all (a wrong-but-plausible status is worse than an honest "can't undo"). It needs the same care this project has put into every other `userStatus`-touching change (`docs/status-model-plan.md`), including tests for the double-swipe/rapid-undo race described above, and is deliberately scoped out of this pass so it can get that attention on its own rather than being rushed in alongside `PATCH /series/:seriesId/status`.
 
 ## Not available yet
 
 - **Search / add a new series from TMDb.** `GET /series` only returns series MyTv already has a relationship with — there's no "search TMDb and start tracking a new show" endpoint. TMDb matching exists as an offline backend pipeline (`tmdb-enrichment/`), not a live API a client can call.
 - **Movies** — series only in V1.
 - **Real auth / multi-user support.**
-- **Manual status changes** (pause/drop/resume) — `userStatus` only ever changes as a side effect of watching an episode or watchlist add/remove; there's no direct "set status to PAUSED" endpoint yet.
-- **Undo / unmark watched.**
-- **`EpisodeWatch.id` on `GET /series/:id`'s per-episode watch state** — blocks a direct "edit note from series detail" flow (see above).
+- **Undo / unmark watched** — see the dedicated section above.
 - **`ExternalIds.imdbId`/`traktId`** — fetched by TMDb enrichment in `imdbId`'s case, but not yet written to the database; Trakt enrichment has no apply step at all.

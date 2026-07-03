@@ -7,6 +7,7 @@ import { Prisma, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { EpisodeSummaryDto } from '../../common/dto/episode-summary.dto';
 import { EpisodeDetailDto } from './dto/episode-detail.dto';
 import { SeasonDetailDto } from './dto/season-detail.dto';
+import { ManualUserStatus } from './dto/update-series-status.dto';
 
 export interface LibraryFilters {
   userId: string;
@@ -47,6 +48,7 @@ export interface RawEpisodeForGrouping {
 }
 
 export interface EpisodeWatchInfo {
+  episodeWatchId: string;
   watchedAt: Date;
   note: string | null;
 }
@@ -82,6 +84,7 @@ export function groupEpisodesBySeason(
       watched: !!watch,
       watchedAt: watch?.watchedAt ?? null,
       note: watch?.note ?? null,
+      episodeWatchId: watch?.episodeWatchId ?? null,
     });
 
     seasons.set(ep.seasonNumber, bucket);
@@ -90,4 +93,45 @@ export function groupEpisodesBySeason(
   return [...seasons.entries()]
     .sort(([a], [b]) => a - b)
     .map(([seasonNumber, bucket]) => ({ seasonNumber, title: bucket.title, episodes: bucket.episodes }));
+}
+
+// Finds the first unwatched episode in (seasonNumber, episodeNumber) order
+// — same "first gap, not just after the last-watched position" semantics
+// as next-episode-backfill/derive-next-episode.ts, reimplemented here
+// (deliberately not imported — that module is a one-time offline backfill
+// pipeline, this is a live request-path concern, and the task explicitly
+// scopes this change away from touching that pipeline) rather than
+// "next episode after wherever the user last clicked."
+export function findFirstUnwatchedEpisodeId(orderedEpisodeIds: string[], watchedEpisodeIds: ReadonlySet<string>): string | null {
+  return orderedEpisodeIds.find((id) => !watchedEpisodeIds.has(id)) ?? null;
+}
+
+export interface ManualStatusUpdateInput {
+  userStatus: ManualUserStatus;
+  orderedEpisodeIds: string[];
+  watchedEpisodeIds: ReadonlySet<string>;
+}
+
+export interface ManualStatusUpdateResult {
+  userStatus: UserSeriesStatus;
+  nextEpisodeId: string | null;
+}
+
+// The status-update rules from PATCH /series/:seriesId/status, as pure
+// logic: WATCHING re-derives nextEpisodeId from this user's currently-known
+// episode catalog (best-effort — may come back null for a series with no
+// episodes recorded yet, or if everything currently known is watched);
+// PAUSED/DROPPED/WATCHLIST always clear it, since none of those states
+// implies "here's what to watch next." Never touches WatchlistItem — that's
+// a DB side effect the service layer handles, not something pure logic
+// should do.
+export function deriveManualStatusUpdate(input: ManualStatusUpdateInput): ManualStatusUpdateResult {
+  if (input.userStatus === UserSeriesStatus.WATCHING) {
+    return {
+      userStatus: UserSeriesStatus.WATCHING,
+      nextEpisodeId: findFirstUnwatchedEpisodeId(input.orderedEpisodeIds, input.watchedEpisodeIds),
+    };
+  }
+
+  return { userStatus: input.userStatus, nextEpisodeId: null };
 }

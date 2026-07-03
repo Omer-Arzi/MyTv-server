@@ -1,5 +1,11 @@
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
-import { buildLibraryWhere, groupEpisodesBySeason, RawEpisodeForGrouping } from '../series-query-helpers';
+import {
+  buildLibraryWhere,
+  deriveManualStatusUpdate,
+  findFirstUnwatchedEpisodeId,
+  groupEpisodesBySeason,
+  RawEpisodeForGrouping,
+} from '../series-query-helpers';
 
 describe('buildLibraryWhere', () => {
   it('always scopes to the current user\'s own UserSeriesProgress relationship', () => {
@@ -84,35 +90,38 @@ describe('groupEpisodesBySeason', () => {
     expect(seasons.map((s) => s.seasonNumber)).toEqual([1, 2, 3]);
   });
 
-  it('marks an episode watched, with watchedAt and note, when present in the watch-info map', () => {
+  it('marks an episode watched, with watchedAt, note, and episodeWatchId, when present in the watch-info map', () => {
     const watchedAt = new Date('2026-06-30T21:14:00.000Z');
     const episodes = [ep({ id: 'e1' })];
-    const watchInfo = new Map([['e1', { watchedAt, note: 'Great episode!' }]]);
+    const watchInfo = new Map([['e1', { episodeWatchId: 'watch-1', watchedAt, note: 'Great episode!' }]]);
 
     const seasons = groupEpisodesBySeason(episodes, watchInfo);
 
     expect(seasons[0].episodes[0].watched).toBe(true);
     expect(seasons[0].episodes[0].watchedAt).toBe(watchedAt);
     expect(seasons[0].episodes[0].note).toBe('Great episode!');
+    expect(seasons[0].episodes[0].episodeWatchId).toBe('watch-1');
   });
 
-  it('marks an episode unwatched, with null watchedAt/note, when absent from the watch-info map', () => {
+  it('marks an episode unwatched, with null watchedAt/note/episodeWatchId, when absent from the watch-info map', () => {
     const episodes = [ep({ id: 'e1' })];
     const seasons = groupEpisodesBySeason(episodes, new Map());
 
     expect(seasons[0].episodes[0].watched).toBe(false);
     expect(seasons[0].episodes[0].watchedAt).toBeNull();
     expect(seasons[0].episodes[0].note).toBeNull();
+    expect(seasons[0].episodes[0].episodeWatchId).toBeNull();
   });
 
   it('reports watched=true with a null note when the episode was watched but no note was left', () => {
     const watchedAt = new Date('2026-06-30T21:14:00.000Z');
     const episodes = [ep({ id: 'e1' })];
-    const watchInfo = new Map([['e1', { watchedAt, note: null }]]);
+    const watchInfo = new Map([['e1', { episodeWatchId: 'watch-1', watchedAt, note: null }]]);
 
     const seasons = groupEpisodesBySeason(episodes, watchInfo);
     expect(seasons[0].episodes[0].watched).toBe(true);
     expect(seasons[0].episodes[0].note).toBeNull();
+    expect(seasons[0].episodes[0].episodeWatchId).toBe('watch-1');
   });
 
   it('carries imageUrl through into the grouped episode', () => {
@@ -124,4 +133,63 @@ describe('groupEpisodesBySeason', () => {
   it('returns an empty array for a series with no episodes', () => {
     expect(groupEpisodesBySeason([], new Map())).toEqual([]);
   });
+});
+
+describe('findFirstUnwatchedEpisodeId', () => {
+  it('returns the first id not present in the watched set', () => {
+    expect(findFirstUnwatchedEpisodeId(['e1', 'e2', 'e3'], new Set(['e1']))).toBe('e2');
+  });
+
+  it('finds the first gap even if a later episode was watched out of order', () => {
+    expect(findFirstUnwatchedEpisodeId(['e1', 'e2', 'e3'], new Set(['e1', 'e3']))).toBe('e2');
+  });
+
+  it('returns the first episode when nothing has been watched', () => {
+    expect(findFirstUnwatchedEpisodeId(['e1', 'e2'], new Set())).toBe('e1');
+  });
+
+  it('returns null when everything is watched', () => {
+    expect(findFirstUnwatchedEpisodeId(['e1', 'e2'], new Set(['e1', 'e2']))).toBeNull();
+  });
+
+  it('returns null for an empty episode list', () => {
+    expect(findFirstUnwatchedEpisodeId([], new Set())).toBeNull();
+  });
+});
+
+describe('deriveManualStatusUpdate — status update rules', () => {
+  it('WATCHING re-derives nextEpisodeId as the first unwatched episode', () => {
+    const result = deriveManualStatusUpdate({
+      userStatus: UserSeriesStatus.WATCHING,
+      orderedEpisodeIds: ['e1', 'e2', 'e3'],
+      watchedEpisodeIds: new Set(['e1']),
+    });
+    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 'e2' });
+  });
+
+  it('WATCHING comes back with a null nextEpisodeId when everything currently known is watched', () => {
+    const result = deriveManualStatusUpdate({
+      userStatus: UserSeriesStatus.WATCHING,
+      orderedEpisodeIds: ['e1', 'e2'],
+      watchedEpisodeIds: new Set(['e1', 'e2']),
+    });
+    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: null });
+  });
+
+  it('WATCHING comes back with a null nextEpisodeId when there is no episode catalog at all', () => {
+    const result = deriveManualStatusUpdate({ userStatus: UserSeriesStatus.WATCHING, orderedEpisodeIds: [], watchedEpisodeIds: new Set() });
+    expect(result.nextEpisodeId).toBeNull();
+  });
+
+  it.each([UserSeriesStatus.PAUSED, UserSeriesStatus.DROPPED, UserSeriesStatus.WATCHLIST])(
+    '%s always clears nextEpisodeId, even if an unwatched episode is available',
+    (userStatus) => {
+      const result = deriveManualStatusUpdate({
+        userStatus,
+        orderedEpisodeIds: ['e1', 'e2'],
+        watchedEpisodeIds: new Set(),
+      });
+      expect(result).toEqual({ userStatus, nextEpisodeId: null });
+    },
+  );
 });
