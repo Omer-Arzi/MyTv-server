@@ -8,3 +8,7 @@ import-tvtime/output/
 trakt-enrichment/output/
 tmdb-enrichment/output/
 next-episode-backfill/output/
+secondary-provider-audit/output/
+watch-next-audit/output/
+watch-next-review/output/
+db-backups/
