@@ -21,8 +21,7 @@ Backend for a personal TV series tracking app. NestJS + TypeScript + PostgreSQL 
 npm install
 cp .env.example .env      # adjust DATABASE_URL if needed
 docker compose up -d      # starts local Postgres on localhost:5433
-npx prisma migrate dev    # creates the schema
-npm run prisma:seed       # loads demo data
+npx prisma migrate dev    # creates the schema (also ensures the dev user exists)
 npm run start:dev         # http://localhost:3000, Swagger at /docs
 ```
 
@@ -55,10 +54,13 @@ npm run prisma:deploy    # prisma migrate deploy — apply existing migrations (
 ### Seed data
 
 ```bash
-npm run prisma:seed
+npm run prisma:seed              # safe — only ensures the dev user row exists, never deletes anything
+npm run seed:demo:destructive    # destructive — wipes the DB and loads synthetic demo series; guarded, see below
 ```
 
-Wipes and reloads demo data: one dev user, three series (`The Great Voyage` — ongoing/actively watched, `Old Town Mysteries` — ended/stale progress, `Quantum Kitchen` — unwatched, sitting on the watchlist). Re-running it is safe and idempotent (it deletes prior rows first).
+`npm run prisma:seed` (also auto-triggered by `prisma migrate dev`) is always safe to run, against any database, at any time — it upserts the dev user row and touches nothing else.
+
+`npm run seed:demo:destructive` wipes every app table and reloads synthetic demo data (`Quantum Kitchen`, `Signal & Noise`). It refuses to run unless `ALLOW_DESTRUCTIVE_SEED=true` is set **and** no real imported data is detected in the database — see [`docs/dev-database-safety.md`](docs/dev-database-safety.md) for the full story (including the incident that made this necessary) and exact usage.
 
 ### Prisma Studio
 
@@ -91,7 +93,9 @@ There is no real authentication yet. A `DevUserMiddleware` (`src/common/middlewa
 ```
 prisma/
   schema.prisma       Database schema
-  seed.ts              Seed script (3 series, 1 user)
+  seed.ts              Safe seed (npx prisma db seed) — ensures the dev user exists, nothing else
+  seed-demo.ts          Destructive demo seed (npm run seed:demo:destructive) — guarded, see docs/dev-database-safety.md
+  seed-guard.ts         Shared safety-check logic for seed-demo.ts
   migrations/          Generated migrations
 src/
   main.ts              Bootstrap, global ValidationPipe, Swagger setup

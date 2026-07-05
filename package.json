@@ -16,6 +16,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "seed:demo:destructive": "ts-node prisma/seed-demo.ts",
     "prisma:backfill-status-model": "ts-node prisma/backfill-status-model.ts",
     "postinstall": "prisma generate",
     "test": "jest",

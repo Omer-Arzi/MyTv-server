@@ -1,11 +1,17 @@
-// The actual destructive demo-data seed — deliberately kept out of the
-// `npx prisma db seed` main path (seed.ts just points here) per the
-// 2026-07-04 incident this file's guard exists to prevent (see
-// seed-guard.ts's header comment for the full story).
+// The destructive demo-data seed — deliberately NOT wired into `npx prisma
+// db seed` (seed.ts is a separate, always-safe file) or anything Prisma's
+// CLI auto-triggers (e.g. `prisma migrate dev`'s post-migration seed hook).
+// The only way to run this is the explicit `npm run seed:demo:destructive`
+// command. Exists because of a real incident (2026-07-04): an unconditional
+// wipe-and-reseed that WAS the `prisma db seed` entrypoint at the time
+// destroyed a real, TV-Time-imported database with no backup. See
+// docs/dev-database-safety.md for the full picture.
 //
-// Self-guarded: this file checks safety itself before doing anything
-// destructive, so running it directly (`ts-node prisma/seed-demo.ts`)
-// is exactly as safe as going through seed.ts — there is no bypass.
+// Self-guarded on top of that: this file checks safety itself
+// (evaluateSeedSafety) before doing anything destructive, so even someone
+// who runs `ts-node prisma/seed-demo.ts` directly, bypassing the npm script
+// name, still can't wipe a database holding real data without also setting
+// ALLOW_DESTRUCTIVE_SEED=true.
 
 import { PrismaClient, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { DEV_USER_DISPLAY_NAME, DEV_USER_EMAIL, DEV_USER_ID } from '../src/common/constants';
@@ -39,7 +45,12 @@ async function assertSafeToRun(): Promise<void> {
 async function main() {
   await assertSafeToRun();
 
-  console.log('Seeding demo database...');
+  console.log('');
+  console.log('!!! DESTRUCTIVE OPERATION !!!');
+  console.log('About to permanently delete ALL Series/Season/Episode/EpisodeWatch/EpisodeNote/');
+  console.log('UserSeriesProgress/WatchlistItem/ExternalIds/User rows in this database, then');
+  console.log('reseed with synthetic demo data. This cannot be undone without a separate backup.');
+  console.log('');
 
   // Wipe existing data (order matters for FKs). Only reached once
   // assertSafeToRun() has already confirmed this is not a real database.
