@@ -5,6 +5,7 @@
 
 import { Prisma, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { EpisodeSummaryDto } from '../../common/dto/episode-summary.dto';
+import { isEpisodeReleased } from '../../common/is-episode-released';
 import { EpisodeDetailDto } from './dto/episode-detail.dto';
 import { SeasonDetailDto } from './dto/season-detail.dto';
 import { ManualUserStatus } from './dto/update-series-status.dto';
@@ -95,20 +96,29 @@ export function groupEpisodesBySeason(
     .map(([seasonNumber, bucket]) => ({ seasonNumber, title: bucket.title, episodes: bucket.episodes }));
 }
 
-// Finds the first unwatched episode in (seasonNumber, episodeNumber) order
-// — same "first gap, not just after the last-watched position" semantics
-// as next-episode-backfill/derive-next-episode.ts, reimplemented here
-// (deliberately not imported — that module is a one-time offline backfill
-// pipeline, this is a live request-path concern, and the task explicitly
-// scopes this change away from touching that pipeline) rather than
-// "next episode after wherever the user last clicked."
-export function findFirstUnwatchedEpisodeId(orderedEpisodeIds: string[], watchedEpisodeIds: ReadonlySet<string>): string | null {
-  return orderedEpisodeIds.find((id) => !watchedEpisodeIds.has(id)) ?? null;
+export interface OrderedEpisodeForNextLookup {
+  id: string;
+  airDate: Date | null;
+}
+
+// Finds the first unwatched, already-released episode in (seasonNumber,
+// episodeNumber) order — same "first gap, not just after the last-watched
+// position" semantics as next-episode-backfill/derive-next-episode.ts,
+// reimplemented here (deliberately not imported — that module is a
+// one-time offline backfill pipeline, this is a live request-path concern,
+// and the task explicitly scopes this change away from touching that
+// pipeline) rather than "next episode after wherever the user last
+// clicked." Requiring isEpisodeReleased means a not-yet-aired episode is
+// never returned as "next" even if it's the first unwatched one in order —
+// see src/common/is-episode-released.ts for why.
+export function findFirstUnwatchedEpisodeId(orderedEpisodes: OrderedEpisodeForNextLookup[], watchedEpisodeIds: ReadonlySet<string>, now: Date = new Date()): string | null {
+  const next = orderedEpisodes.find((e) => !watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate, now));
+  return next?.id ?? null;
 }
 
 export interface ManualStatusUpdateInput {
   userStatus: ManualUserStatus;
-  orderedEpisodeIds: string[];
+  orderedEpisodes: OrderedEpisodeForNextLookup[];
   watchedEpisodeIds: ReadonlySet<string>;
 }
 
@@ -129,7 +139,7 @@ export function deriveManualStatusUpdate(input: ManualStatusUpdateInput): Manual
   if (input.userStatus === UserSeriesStatus.WATCHING) {
     return {
       userStatus: UserSeriesStatus.WATCHING,
-      nextEpisodeId: findFirstUnwatchedEpisodeId(input.orderedEpisodeIds, input.watchedEpisodeIds),
+      nextEpisodeId: findFirstUnwatchedEpisodeId(input.orderedEpisodes, input.watchedEpisodeIds),
     };
   }
 

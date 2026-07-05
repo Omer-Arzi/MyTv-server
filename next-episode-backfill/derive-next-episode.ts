@@ -9,10 +9,14 @@
 // the app's single source of truth for this exact rule (markWatched calls
 // it too), and diverging from it here would let this backfill and the live
 // mark-watched flow disagree about what "finished" means for the same
-// releaseStatus value.
+// releaseStatus value. Same reasoning for isEpisodeReleased
+// (src/common/is-episode-released.ts): a not-yet-aired episode must never
+// be treated as "next" here either, or this backfill could write a
+// nextEpisodeId the live mark-watched flow would refuse to produce.
 
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { deriveUserStatusFromNextEpisode } from '../src/common/derive-user-status';
+import { isEpisodeReleased } from '../src/common/is-episode-released';
 
 // Statuses this backfill never touches at all — DROPPED/PAUSED are
 // user-controlled personal intent (never overridden by any automated pass,
@@ -49,6 +53,10 @@ export interface NextEpisodeDecision {
 
 export interface OrderedEpisode {
   id: string;
+  // Null is treated as "not released yet" — see
+  // src/common/is-episode-released.ts for why that's the conservative
+  // choice rather than assuming a missing date means already aired.
+  airDate: Date | null;
 }
 
 export interface DeriveNextEpisodeInput {
@@ -88,7 +96,11 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
     };
   }
 
-  const nextEpisode = input.orderedEpisodes.find((e) => !input.watchedEpisodeIds.has(e.id));
+  // Not-yet-aired episodes are never a valid "next episode" — a future
+  // airDate (or a null one, treated the same conservative way) means this
+  // episode isn't watchable yet, so it's skipped exactly like an already-
+  // watched one for this lookup's purposes.
+  const nextEpisode = input.orderedEpisodes.find((e) => !input.watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate));
 
   if (nextEpisode) {
     // deriveUserStatusFromNextEpisode(true, ...) always returns WATCHING —
@@ -114,7 +126,13 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
     };
   }
 
-  // No unwatched episode remains, and the full catalog is known.
+  // No unwatched-AND-released episode remains, and the full catalog is
+  // known. This covers two distinct real situations identically, on
+  // purpose: genuinely nothing left unwatched, OR everything left unwatched
+  // is a future/unreleased episode (e.g. an announced-but-unaired episode
+  // of a RETURNING show). Either way, there's nothing watchable right now,
+  // so the outcome is the same: CAUGHT_UP (or COMPLETED), never a
+  // nextEpisodeId pointing at something the user can't actually watch yet.
   if (input.currentUserStatus === UserSeriesStatus.CAUGHT_UP) {
     // "Keep nextEpisodeId null unless a newly available episode exists" —
     // it doesn't. Nothing to do; userStatus is untouched (already correct).
@@ -122,13 +140,13 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
       action: 'no-op-up-to-date',
       nextEpisodeId: null,
       newUserStatus: null,
-      reason: 'already CAUGHT_UP and no newly available unwatched episode exists — nothing to change',
+      reason: 'already CAUGHT_UP and no newly available (unwatched and already-aired) episode exists — nothing to change',
     };
   }
 
-  // currentUserStatus === WATCHING, full catalog known, nothing left
-  // unwatched: derive CAUGHT_UP vs COMPLETED exactly the way markWatched
-  // already does for this same situation.
+  // currentUserStatus === WATCHING, full catalog known, nothing left that's
+  // both unwatched and already aired: derive CAUGHT_UP vs COMPLETED exactly
+  // the way markWatched already does for this same situation.
   const derivedStatus = deriveUserStatusFromNextEpisode(false, input.releaseStatus);
 
   if (derivedStatus === UserSeriesStatus.COMPLETED) {
@@ -136,7 +154,7 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
       action: 'mark-completed',
       nextEpisodeId: null,
       newUserStatus: UserSeriesStatus.COMPLETED,
-      reason: `full episode catalog known, no unwatched episodes remain, and releaseStatus (${input.releaseStatus}) is finished — moving WATCHING to COMPLETED`,
+      reason: `full episode catalog known, no unwatched-and-aired episodes remain, and releaseStatus (${input.releaseStatus}) is finished — moving WATCHING to COMPLETED`,
     };
   }
 
@@ -144,6 +162,6 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
     action: 'mark-caught-up',
     nextEpisodeId: null,
     newUserStatus: UserSeriesStatus.CAUGHT_UP,
-    reason: `full episode catalog known, no unwatched episodes remain, and releaseStatus (${input.releaseStatus}) is not finished — moving WATCHING to CAUGHT_UP`,
+    reason: `full episode catalog known, no unwatched-and-aired episodes remain, and releaseStatus (${input.releaseStatus}) is not finished — moving WATCHING to CAUGHT_UP`,
   };
 }

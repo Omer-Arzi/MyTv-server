@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { deriveUserStatusFromNextEpisode } from '../../common/derive-user-status';
+import { findFirstUnwatchedEpisodeId, OrderedEpisodeForNextLookup } from '../series/series-query-helpers';
 import { MarkWatchedResponseDto } from './dto/mark-watched-response.dto';
 import { EpisodeWatchDto } from './dto/episode-watch.dto';
 
@@ -27,7 +28,7 @@ export class EpisodeWatchService {
       include: { note: true },
     });
 
-    const nextEpisode = await this.findNextEpisode(seriesId, episode.season.seasonNumber, episode.episodeNumber);
+    const nextEpisode = await this.findNextEpisode(userId, seriesId);
 
     // A fresh watch is the strongest signal available — always overwrite
     // userStatus (clears any prior WATCHLIST/PAUSED/DROPPED without a
@@ -88,19 +89,33 @@ export class EpisodeWatchService {
     };
   }
 
-  // Next episode is the following episode number in the same season, or
-  // episode 1 of the next season if the current one just ended.
-  private findNextEpisode(seriesId: string, seasonNumber: number, episodeNumber: number) {
-    return this.prisma.episode.findFirst({
-      where: {
-        season: { seriesId },
-        OR: [
-          { season: { seasonNumber }, episodeNumber: { gt: episodeNumber } },
-          { season: { seasonNumber: { gt: seasonNumber } } },
-        ],
-      },
-      orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-      include: { season: true },
-    });
+  // Next episode is the first released, not-yet-watched episode in
+  // (seasonNumber, episodeNumber) order for this user — the same "first
+  // gap" semantics as PATCH /series/:seriesId/status
+  // (series-query-helpers.ts's findFirstUnwatchedEpisodeId, reused here
+  // rather than reimplemented a third time).
+  //
+  // This used to just look for "the episode immediately after the one
+  // being marked," with no check against what's actually been watched.
+  // That regresses out-of-order watching: skipping S1E2 to watch S1E3
+  // permanently hid S1E2 from Watch Next, and later watching the skipped
+  // S1E2 would compute S1E3 as "next" again even though it was already
+  // watched, overwriting nextEpisodeId with an already-watched episode.
+  private async findNextEpisode(userId: string, seriesId: string) {
+    const [episodes, watches] = await Promise.all([
+      this.prisma.episode.findMany({
+        where: { season: { seriesId } },
+        orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
+        select: { id: true, airDate: true },
+      }),
+      this.prisma.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
+    ]);
+
+    const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes;
+    const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
+    const nextEpisodeId = findFirstUnwatchedEpisodeId(orderedEpisodes, watchedEpisodeIds);
+    if (!nextEpisodeId) return null;
+
+    return this.prisma.episode.findUnique({ where: { id: nextEpisodeId }, include: { season: true } });
   }
 }

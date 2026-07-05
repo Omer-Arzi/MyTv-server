@@ -74,7 +74,7 @@ async function main() {
     }),
     prisma.episode.findMany({
       where: { season: { seriesId: { in: seriesIds } } },
-      select: { id: true, episodeNumber: true, season: { select: { seriesId: true, seasonNumber: true } } },
+      select: { id: true, episodeNumber: true, airDate: true, season: { select: { seriesId: true, seasonNumber: true } } },
       orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
     }),
     prisma.episodeWatch.findMany({
@@ -88,7 +88,7 @@ async function main() {
   const episodesBySeriesId = new Map<string, OrderedEpisode[]>();
   for (const e of episodeRows) {
     const list = episodesBySeriesId.get(e.season.seriesId) ?? [];
-    list.push({ id: e.id });
+    list.push({ id: e.id, airDate: e.airDate });
     episodesBySeriesId.set(e.season.seriesId, list);
   }
 

@@ -6,7 +6,13 @@ import { SeriesDetailDto } from './dto/series-detail.dto';
 import { SeriesListPageDto } from './dto/series-list-page.dto';
 import { ManualUserStatus } from './dto/update-series-status.dto';
 import { UpdateSeriesStatusResponseDto } from './dto/update-series-status-response.dto';
-import { buildLibraryWhere, deriveManualStatusUpdate, groupEpisodesBySeason, LibraryFilters } from './series-query-helpers';
+import {
+  buildLibraryWhere,
+  deriveManualStatusUpdate,
+  groupEpisodesBySeason,
+  LibraryFilters,
+  OrderedEpisodeForNextLookup,
+} from './series-query-helpers';
 import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
 
 @Injectable()
@@ -119,23 +125,25 @@ export class SeriesService {
 
     // Only fetched when actually needed (WATCHING) — DROPPED/PAUSED/
     // WATCHLIST never look at the episode catalog, they always clear
-    // nextEpisodeId per deriveManualStatusUpdate.
-    let orderedEpisodeIds: string[] = [];
+    // nextEpisodeId per deriveManualStatusUpdate. airDate is fetched
+    // alongside id so findFirstUnwatchedEpisodeId can skip a not-yet-aired
+    // episode rather than surfacing it as "next" (src/common/is-episode-released.ts).
+    let orderedEpisodes: OrderedEpisodeForNextLookup[] = [];
     let watchedEpisodeIds = new Set<string>();
     if (userStatus === UserSeriesStatus.WATCHING) {
       const [episodes, watches] = await Promise.all([
         this.prisma.episode.findMany({
           where: { season: { seriesId } },
           orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-          select: { id: true },
+          select: { id: true, airDate: true },
         }),
         this.prisma.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
       ]);
-      orderedEpisodeIds = episodes.map((e) => e.id);
+      orderedEpisodes = episodes;
       watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
     }
 
-    const decision = deriveManualStatusUpdate({ userStatus, orderedEpisodeIds, watchedEpisodeIds });
+    const decision = deriveManualStatusUpdate({ userStatus, orderedEpisodes, watchedEpisodeIds });
 
     const nextEpisode = await this.prisma.$transaction(async (tx) => {
       await tx.userSeriesProgress.upsert({

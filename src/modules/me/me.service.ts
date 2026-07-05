@@ -6,6 +6,7 @@ import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
 import { RecentlyWatchedItemDto, RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
+import { filterReleasedNextEpisodes } from './me-query-helpers';
 
 @Injectable()
 export class MeService {
@@ -86,14 +87,15 @@ export class MeService {
       },
     });
 
-    return progress
-      .filter((p) => p.nextEpisode !== null)
-      .map((p) => ({
-        series: toSeriesSummary(p.series),
-        nextEpisode: toEpisodeSummary(p.nextEpisode!),
-        lastWatchedAt: p.lastWatchedAt,
-        userStatus: p.userStatus,
-      }));
+    // Read-time re-check on top of the write-side gating (see
+    // me-query-helpers.ts) — a future or null-airDate nextEpisode never
+    // reaches the response, regardless of how nextEpisodeId got set.
+    return filterReleasedNextEpisodes(progress).map((p) => ({
+      series: toSeriesSummary(p.series),
+      nextEpisode: toEpisodeSummary(p.nextEpisode),
+      lastWatchedAt: p.lastWatchedAt,
+      userStatus: p.userStatus,
+    }));
   }
 
   async getStaleSeries(userId: string, afterDays: number): Promise<StaleSeriesItemDto[]> {

@@ -1,12 +1,22 @@
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { DeriveNextEpisodeInput, deriveNextEpisodeUpdate } from '../derive-next-episode';
 
+// Fixed, unambiguously-past/future reference dates rather than relying on
+// the real current time — keeps these tests deterministic regardless of
+// when they run.
+const PAST = new Date('2000-01-01');
+const FUTURE = new Date('2999-01-01');
+
 function input(overrides: Partial<DeriveNextEpisodeInput> = {}): DeriveNextEpisodeInput {
   return {
     currentUserStatus: UserSeriesStatus.WATCHING,
     releaseStatus: ReleaseStatus.RETURNING,
     hasFullCatalog: true,
-    orderedEpisodes: [{ id: 'ep-1' }, { id: 'ep-2' }, { id: 'ep-3' }],
+    orderedEpisodes: [
+      { id: 'ep-1', airDate: PAST },
+      { id: 'ep-2', airDate: PAST },
+      { id: 'ep-3', airDate: PAST },
+    ],
     watchedEpisodeIds: new Set(['ep-1']),
     ...overrides,
   };
@@ -60,7 +70,7 @@ describe('deriveNextEpisodeUpdate — incomplete catalog', () => {
     // The trap this guards against: MyTv's own (incomplete) episode list
     // has nothing left unwatched, which looks identical to "caught up" if
     // you don't know the catalog is incomplete.
-    const decision = deriveNextEpisodeUpdate(input({ hasFullCatalog: false, orderedEpisodes: [{ id: 'ep-1' }], watchedEpisodeIds: new Set(['ep-1']) }));
+    const decision = deriveNextEpisodeUpdate(input({ hasFullCatalog: false, orderedEpisodes: [{ id: 'ep-1', airDate: PAST }], watchedEpisodeIds: new Set(['ep-1']) }));
     expect(decision.action).toBe('unchanged-incomplete-catalog');
     expect(decision.newUserStatus).toBeNull();
   });
@@ -145,5 +155,89 @@ describe('deriveNextEpisodeUpdate — WATCHING, full catalog, nothing left unwat
     const decision = deriveNextEpisodeUpdate(input({ releaseStatus: ReleaseStatus.UNKNOWN, watchedEpisodeIds: caughtUp }));
     expect(decision.action).toBe('mark-caught-up');
     expect(decision.newUserStatus).toBe(UserSeriesStatus.CAUGHT_UP);
+  });
+});
+
+describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next"', () => {
+  it('does not treat a future-dated unwatched episode as the next episode', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST },
+          { id: 'ep-2', airDate: FUTURE },
+          { id: 'ep-3', airDate: FUTURE },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    // ep-2 is unwatched but unreleased -> treated the same as "nothing left
+    // unwatched" -> WATCHING moves to CAUGHT_UP/COMPLETED, never ep-2.
+    expect(decision.action).toBe('mark-caught-up');
+    expect(decision.nextEpisodeId).toBeNull();
+  });
+
+  it('does not treat a null-airDate unwatched episode as the next episode (conservative default)', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST },
+          { id: 'ep-2', airDate: null },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    expect(decision.action).toBe('mark-caught-up');
+    expect(decision.nextEpisodeId).toBeNull();
+  });
+
+  it('keeps a CAUGHT_UP series at CAUGHT_UP (does not move to WATCHING) when the only unwatched episode is unreleased', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST },
+          { id: 'ep-2', airDate: PAST },
+          { id: 'ep-3', airDate: FUTURE },
+        ],
+        watchedEpisodeIds: new Set(['ep-1', 'ep-2']),
+      }),
+    );
+    expect(decision.action).toBe('no-op-up-to-date');
+    expect(decision.nextEpisodeId).toBeNull();
+    expect(decision.newUserStatus).toBeNull();
+  });
+
+  it('skips a future-dated gap and finds a later already-released unwatched episode, if one somehow exists', () => {
+    // Pathological/non-monotonic ordering (episode numbers don't perfectly
+    // track air dates) — exercised for completeness, even though real TMDb
+    // data is expected to always have monotonically increasing air dates
+    // within a series.
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST },
+          { id: 'ep-2', airDate: FUTURE },
+          { id: 'ep-3', airDate: PAST },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    expect(decision.action).toBe('set-next-episode');
+    expect(decision.nextEpisodeId).toBe('ep-3');
+  });
+
+  it('still finds an already-released unwatched episode normally when it exists', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST },
+          { id: 'ep-2', airDate: PAST },
+          { id: 'ep-3', airDate: FUTURE },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    expect(decision.action).toBe('set-next-episode');
+    expect(decision.nextEpisodeId).toBe('ep-2');
   });
 });
