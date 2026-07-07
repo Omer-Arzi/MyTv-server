@@ -16,4 +16,5 @@ tvtime-parity-audit/output/
 stale-series-audit/output/
 manual-progress-corrections/output/
 episode-release-refresh/output/
+library-health/output/
 db-backups/
