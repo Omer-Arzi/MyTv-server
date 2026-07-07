@@ -32,7 +32,8 @@
     "library-health:report": "ts-node library-health/run-health-report.ts",
     "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts",
     "library-health:missing-provider-candidates": "ts-node library-health/run-missing-provider-candidates.ts",
-    "library-health:provider-confirmation": "ts-node library-health/run-provider-confirmation.ts"
+    "library-health:provider-confirmation": "ts-node library-health/run-provider-confirmation.ts",
+    "library-health:provider-confirmation-dry-run": "ts-node library-health/run-provider-confirmation-dry-run.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
