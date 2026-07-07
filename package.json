@@ -27,7 +27,8 @@
     "tmdb:enrichment-dry-run": "ts-node tmdb-enrichment/run-enrichment-dry-run.ts",
     "tmdb:apply-plan": "ts-node tmdb-enrichment/run-apply-plan.ts",
     "tmdb:enrichment-apply": "ts-node tmdb-enrichment/run-apply-plan.ts",
-    "next-episode:backfill": "ts-node next-episode-backfill/run-backfill.ts"
+    "next-episode:backfill": "ts-node next-episode-backfill/run-backfill.ts",
+    "episode-refresh:dry-run": "ts-node episode-release-refresh/run-refresh.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

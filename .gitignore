@@ -11,4 +11,9 @@ next-episode-backfill/output/
 secondary-provider-audit/output/
 watch-next-audit/output/
 watch-next-review/output/
+image-coverage-audit/output/
+tvtime-parity-audit/output/
+stale-series-audit/output/
+manual-progress-corrections/output/
+episode-release-refresh/output/
 db-backups/

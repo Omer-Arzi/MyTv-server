@@ -6,7 +6,8 @@ import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
 import { RecentlyWatchedItemDto, RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
-import { filterReleasedNextEpisodes } from './me-query-helpers';
+import { filterNonStaleWatchNextCandidates, filterTrustedStaleCandidates } from './me-query-helpers';
+import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 
 @Injectable()
 export class MeService {
@@ -50,18 +51,6 @@ export class MeService {
     };
   }
 
-  // docs/status-model-plan.md §8: an INCLUDE-list, not an exclude-list, so
-  // this section can never silently start showing a future userStatus value
-  // without a deliberate decision to add it here. WATCHING is the only value
-  // that occurs in practice today; CAUGHT_UP is included because it's
-  // correct once enrichment can assign it (nothing does yet). DROPPED/
-  // COMPLETED/WATCHLIST are excluded because re-nudging about a show the
-  // user disengaged from, fully finished, or never started is noise, not a
-  // useful prompt. PAUSED is excluded for now too — a user who explicitly
-  // paused a show already told MyTv they know they stopped, so resurfacing
-  // it here would be redundant; revisit if that turns out to be poor UX.
-  private static readonly STALE_INCLUDED_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP];
-
   // docs/status-model-plan.md §8's literal query: userStatus = 'watching'
   // AND nextEpisodeId IS NOT NULL — an exact-match include, not an
   // exclude-list. This used to be an exclude-list that happened to produce
@@ -73,7 +62,18 @@ export class MeService {
   // Matching the spec's literal equality check means this can't silently
   // regress if a future write path ever produces a CAUGHT_UP-with-
   // nextEpisodeId row again.
+  //
+  // Watch Next / stale-series overlap fix: the same series used to be able
+  // to appear in both sections at once (a WATCHING series with a released
+  // nextEpisode but a very old lastWatchedAt). The two are mutually
+  // exclusive by product definition — a series that's gone stale belongs in
+  // "haven't watched for a while," not in "continue watching" — so this
+  // excludes anything that would also qualify as a trusted stale candidate,
+  // using the exact same threshold and trust rules getStaleSeries uses
+  // below (DEFAULT_STALE_AFTER_DAYS, isTrustedStaleCandidate).
   async getWatchNext(userId: string): Promise<WatchNextItemDto[]> {
+    const staleCutoff = new Date(Date.now() - DEFAULT_STALE_AFTER_DAYS * 24 * 60 * 60 * 1000);
+
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
@@ -87,10 +87,7 @@ export class MeService {
       },
     });
 
-    // Read-time re-check on top of the write-side gating (see
-    // me-query-helpers.ts) — a future or null-airDate nextEpisode never
-    // reaches the response, regardless of how nextEpisodeId got set.
-    return filterReleasedNextEpisodes(progress).map((p) => ({
+    return filterNonStaleWatchNextCandidates(progress, staleCutoff).map((p) => ({
       series: toSeriesSummary(p.series),
       nextEpisode: toEpisodeSummary(p.nextEpisode),
       lastWatchedAt: p.lastWatchedAt,
@@ -98,13 +95,24 @@ export class MeService {
     }));
   }
 
+  // stale-series-audit/output/stale-series-accuracy-report.md found this
+  // endpoint nudging users about series that were already CAUGHT_UP (nothing
+  // left to watch) or had no known next episode at all — old lastWatchedAt
+  // was the only thing being checked. "Haven't watched for a while" now
+  // means the same thing Watch Next does (userStatus = WATCHING, a real
+  // released nextEpisodeId — same trust gate as getWatchNext above), plus
+  // this section's own point: it's been a while (lastWatchedAt older than
+  // afterDays) and the series isn't on the known
+  // episode-numbering/season-shift risk list (see
+  // src/common/stale-series-trust.ts).
   async getStaleSeries(userId: string, afterDays: number): Promise<StaleSeriesItemDto[]> {
     const cutoff = new Date(Date.now() - afterDays * 24 * 60 * 60 * 1000);
 
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
-        userStatus: { in: MeService.STALE_INCLUDED_STATUSES },
+        userStatus: UserSeriesStatus.WATCHING,
+        nextEpisodeId: { not: null },
         lastWatchedAt: { not: null, lt: cutoff },
       },
       orderBy: { lastWatchedAt: 'asc' },
@@ -114,10 +122,10 @@ export class MeService {
       },
     });
 
-    return progress.map((p) => ({
+    return filterTrustedStaleCandidates(progress, cutoff).map((p) => ({
       series: toSeriesSummary(p.series),
       lastWatchedAt: p.lastWatchedAt,
-      nextEpisode: p.nextEpisode ? toEpisodeSummary(p.nextEpisode) : null,
+      nextEpisode: toEpisodeSummary(p.nextEpisode),
       userStatus: p.userStatus,
     }));
   }

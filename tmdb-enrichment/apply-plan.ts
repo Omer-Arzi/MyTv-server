@@ -159,7 +159,12 @@ export interface PlannedCandidateUpdate {
 // Fetches (from cache when possible) everything needed for one candidate
 // and computes exactly what would be written — the single function backing
 // both the dry-run report and the real apply, so they can never disagree.
-async function planCandidateUpdate(
+// Exported so a targeted single-series apply tool (outside the batch
+// safeApplyCandidates flow — e.g. a still-in-progress series a reviewer has
+// manually confirmed) can reuse the exact same TMDb-fetch/plan logic without
+// going through runApplyPlan's batch-oriented validation (which requires
+// watchedEpisodeCount === tmdbTotalEpisodeCount, wrong for an ongoing show).
+export async function planCandidateUpdate(
   prisma: PrismaClient,
   tmdb: TmdbClient,
   writeBatchId: string | null,
@@ -355,7 +360,8 @@ export async function runApplyPlan(prisma: PrismaClient, tmdb: TmdbClient, plan:
   };
 }
 
-async function writeCandidateUpdate(tx: Prisma.TransactionClient, importBatchId: string, userId: string, plan: PlannedCandidateUpdate): Promise<void> {
+// Exported for the same reason as planCandidateUpdate above.
+export async function writeCandidateUpdate(tx: Prisma.TransactionClient, importBatchId: string, userId: string, plan: PlannedCandidateUpdate): Promise<void> {
   if (plan.status !== 'ready' || !plan.series || !plan.externalIds || !plan.seasons || !plan.episodes || !plan.userStatus) {
     throw new Error(`writeCandidateUpdate called on a non-ready plan for ${plan.mytvSeriesTitle} — this is a bug, not a data issue`);
   }

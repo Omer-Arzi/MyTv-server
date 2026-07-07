@@ -1,9 +1,12 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBody, ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiBody, ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types';
 import { WatchlistService } from '../watchlist/watchlist.service';
 import { WatchlistItemDto } from '../watchlist/dto/watchlist-item.dto';
+import { EpisodeWatchService } from '../episodes/episode-watch.service';
+import { WatchAllRequestDto } from '../episodes/dto/watch-all-request.dto';
+import { WatchAllResponseDto } from '../episodes/dto/watch-all-response.dto';
 import { SeriesService } from './series.service';
 import { SeriesDetailDto } from './dto/series-detail.dto';
 import { SeriesListPageDto } from './dto/series-list-page.dto';
@@ -17,6 +20,7 @@ export class SeriesController {
   constructor(
     private readonly seriesService: SeriesService,
     private readonly watchlistService: WatchlistService,
+    private readonly episodeWatchService: EpisodeWatchService,
   ) {}
 
   @Get()
@@ -98,5 +102,28 @@ export class SeriesController {
     @Param('seriesId') seriesId: string,
   ): Promise<void> {
     return this.watchlistService.remove(user.id, seriesId);
+  }
+
+  @Post(':seriesId/watch-all-released')
+  @ApiOperation({
+    summary: 'Mark every released episode in this series as watched',
+    description:
+      'Manual escape hatch for provider-numbering/duplicate-episode issues (see ' +
+      'docs/episode-numbering-and-season-shift-risk.md) — lets a user who knows they\'ve already watched ' +
+      'everything actually released skip per-episode cleanup, across every season at once. Only creates ' +
+      'EpisodeWatch rows for episodes whose airDate is today or earlier; existing watches are never touched. ' +
+      'Pass dryRun: true to preview without writing.',
+  })
+  @ApiParam({ name: 'seriesId', description: 'Series id', example: '3f6b1e2a-8c1d-4b2a-9e2e-111111111111' })
+  @ApiBody({ type: WatchAllRequestDto })
+  @ApiOkResponse({ type: WatchAllResponseDto })
+  @ApiNotFoundResponse({ description: 'Series not found' })
+  @ApiBadRequestResponse({ description: 'userStatus is DROPPED or PAUSED and force was not set to true' })
+  watchAllReleased(
+    @CurrentUser() user: RequestUser,
+    @Param('seriesId') seriesId: string,
+    @Body() body: WatchAllRequestDto,
+  ): Promise<WatchAllResponseDto> {
+    return this.episodeWatchService.markSeriesReleasedWatched(user.id, seriesId, body);
   }
 }

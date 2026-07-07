@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
+import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 import { MeService } from '../me/me.service';
 import { HomeResponseDto } from './dto/home-response.dto';
 
 const HOME_RECENTLY_WATCHED_LIMIT = 10;
-const HOME_STALE_AFTER_DAYS = 30;
+// Kept in sync with StaleSeriesQueryDto's own default (and with
+// MeService.getWatchNext's stale-exclusion cutoff) — /home should not
+// silently use a different staleness threshold than the dedicated endpoint.
+const HOME_STALE_AFTER_DAYS = DEFAULT_STALE_AFTER_DAYS;
 
 @Injectable()
 export class HomeService {
