@@ -19,6 +19,10 @@ export interface TvMazeShowSummary {
   // construct this shape without them.
   network?: { name: string; country: { name: string; code: string } | null } | null;
   webChannel?: { name: string; country: { name: string; code: string } | null } | null;
+  // Present on the real API, added for library-health/run-provider-confirmation.ts's
+  // "poster availability" comparison field — same "optional, always present
+  // on the real API" convention as network/webChannel above.
+  image?: { medium: string | null; original: string | null } | null;
 }
 
 export interface TvMazeShowWithEpisodes extends TvMazeShowSummary {

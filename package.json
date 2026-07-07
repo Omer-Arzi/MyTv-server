@@ -30,7 +30,9 @@
     "next-episode:backfill": "ts-node next-episode-backfill/run-backfill.ts",
     "episode-refresh:dry-run": "ts-node episode-release-refresh/run-refresh.ts",
     "library-health:report": "ts-node library-health/run-health-report.ts",
-    "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts"
+    "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts",
+    "library-health:missing-provider-candidates": "ts-node library-health/run-missing-provider-candidates.ts",
+    "library-health:provider-confirmation": "ts-node library-health/run-provider-confirmation.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
