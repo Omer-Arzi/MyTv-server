@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { SeasonShape } from '../tmdb-enrichment/season-structure-tiebreak';
 import { DryRunClassification, ProviderConfirmationDecisionType, SupportedProvider } from './provider-confirmation-decisions-logic';
+import { OrphanedWatchedEpisode } from './season-zero-orphan-logic';
 
 export interface ProposedFieldUpdate<T> {
   from: T;
@@ -37,6 +38,16 @@ export interface DryRunSeriesEntry {
   proposedNextEpisodeChange: (ProposedFieldUpdate<string | null> & { toLabel: string | null; toIsNew: boolean }) | null;
   proposedUserStatusChange: ProposedFieldUpdate<string> | null;
   warnings: string[];
+  // Populated whenever a season-zero-orphan check was run (i.e. the
+  // comparison found something that would otherwise block) — see
+  // season-zero-orphan-logic.ts. null when no check was needed/run (e.g.
+  // skip/defer/excluded entries, or entries that never got far enough to
+  // compare).
+  orphanSeasonZeroEpisodeCount: number | null;
+  orphanSeasonZeroEpisodes: OrphanedWatchedEpisode[] | null;
+  realSeasonShapeMatchesProvider: boolean | null;
+  // Only ever set alongside classification === 'SAFE_WITH_LOCAL_SPECIAL_ORPHAN'.
+  recommendation: string | null;
 }
 
 export interface ProviderConfirmationDryRunReport {
@@ -54,7 +65,14 @@ export interface ProviderConfirmationDryRunReport {
   series: DryRunSeriesEntry[];
 }
 
-const ALL_CLASSIFICATIONS: DryRunClassification[] = ['SAFE_TO_APPLY_LATER', 'NEEDS_MANUAL_REVIEW', 'BLOCKED_RISK', 'PROVIDER_NOT_FOUND', 'LOCAL_SERIES_NOT_FOUND'];
+const ALL_CLASSIFICATIONS: DryRunClassification[] = [
+  'SAFE_TO_APPLY_LATER',
+  'SAFE_WITH_LOCAL_SPECIAL_ORPHAN',
+  'NEEDS_MANUAL_REVIEW',
+  'BLOCKED_RISK',
+  'PROVIDER_NOT_FOUND',
+  'LOCAL_SERIES_NOT_FOUND',
+];
 const ALL_DECISIONS: ProviderConfirmationDecisionType[] = ['confirm', 'skip', 'defer'];
 
 export function buildProviderConfirmationDryRunReport(input: {
@@ -87,6 +105,7 @@ export function buildProviderConfirmationDryRunReport(input: {
 
 const CLASSIFICATION_LABELS: Record<DryRunClassification, string> = {
   SAFE_TO_APPLY_LATER: 'Safe to apply later',
+  SAFE_WITH_LOCAL_SPECIAL_ORPHAN: 'Safe, with a local special orphan',
   NEEDS_MANUAL_REVIEW: 'Needs manual review',
   BLOCKED_RISK: 'Blocked — risk',
   PROVIDER_NOT_FOUND: 'Provider not found',
@@ -142,6 +161,12 @@ export function buildProviderConfirmationDryRunMarkdownReport(report: ProviderCo
       lines.push(`- Local shape: ${fmtShape(entry.localSeasonShape)} · Provider shape: ${fmtShape(entry.providerSeasonShape)}`);
       lines.push(`- Watched: ${entry.watchedEpisodeCount ?? '_?_'} (orphaned: ${entry.watchedEpisodesOrphaned ?? 0})`);
       lines.push(`- New episodes: ${entry.newEpisodesCount ?? 0} (released: ${entry.releasedNewEpisodesCount ?? 0}, future: ${entry.futureNewEpisodesCount ?? 0}) · Field changes: ${entry.fieldChangeCount ?? 0}`);
+      if (entry.orphanSeasonZeroEpisodeCount !== null) {
+        lines.push(
+          `- Season-0 orphans: ${entry.orphanSeasonZeroEpisodeCount}${entry.orphanSeasonZeroEpisodes && entry.orphanSeasonZeroEpisodes.length > 0 ? ` (${entry.orphanSeasonZeroEpisodes.map((e) => `S${e.seasonNumber}E${e.episodeNumber}`).join(', ')})` : ''} · Real seasons match provider: ${entry.realSeasonShapeMatchesProvider === null ? '_?_' : entry.realSeasonShapeMatchesProvider ? 'yes' : 'no'}`,
+        );
+      }
+      if (entry.recommendation) lines.push(`- **Recommendation**: ${entry.recommendation}`);
       lines.push('');
       lines.push('**Proposed changes (preview only — nothing written):**');
       lines.push('');

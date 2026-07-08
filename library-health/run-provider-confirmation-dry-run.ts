@@ -24,6 +24,7 @@ import { chunkArray, compareSeriesCatalog, LocalEpisodeInput, ProviderEpisodeInp
 import { buildSeasonShape, SeasonShape } from '../tmdb-enrichment/season-structure-tiebreak';
 import { loadSeriesHealthInputs } from './load-series-health-inputs';
 import { checkTitleYearSanity, classifyProviderConfirmationDryRun, ProviderConfirmationDecision } from './provider-confirmation-decisions-logic';
+import { checkBenignSeasonZeroOrphan, detectRealSeasonShrink, findOrphanedWatchedEpisodes } from './season-zero-orphan-logic';
 import {
   buildProviderConfirmationDryRunMarkdownReport,
   buildProviderConfirmationDryRunReport,
@@ -53,7 +54,15 @@ const EMPTY_COMPARISON_FIELDS = {
   proposedNextEpisodeChange: null,
   proposedUserStatusChange: null,
   warnings: [] as string[],
+  orphanSeasonZeroEpisodeCount: null,
+  orphanSeasonZeroEpisodes: null,
+  realSeasonShapeMatchesProvider: null,
+  recommendation: null,
 } as const;
+
+// Task's "small, e.g. <= 1 or configurable" — overridable via
+// --max-season-zero-orphans=.
+const DEFAULT_MAX_SEASON_ZERO_ORPHANS = 1;
 
 // Never touched in this pass regardless of what the decision file says —
 // see library-health/provider-confirmation-reports.ts's DEFER handling for
@@ -64,6 +73,7 @@ interface CliOptions {
   userId: string;
   outDir: string;
   decisionsPath: string;
+  maxSeasonZeroOrphans: number;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -75,11 +85,17 @@ function parseArgs(argv: string[]): CliOptions {
     process.exit(1);
   }
 
-  const options: CliOptions = { userId: DEV_USER_ID, outDir: DEFAULT_OUT_DIR, decisionsPath: DEFAULT_DECISIONS_PATH };
+  const options: CliOptions = {
+    userId: DEV_USER_ID,
+    outDir: DEFAULT_OUT_DIR,
+    decisionsPath: DEFAULT_DECISIONS_PATH,
+    maxSeasonZeroOrphans: DEFAULT_MAX_SEASON_ZERO_ORPHANS,
+  };
   for (const arg of argv) {
     if (arg.startsWith('--user=')) options.userId = arg.slice('--user='.length);
     else if (arg.startsWith('--out=')) options.outDir = path.resolve(arg.slice('--out='.length));
     else if (arg.startsWith('--decisions=')) options.decisionsPath = path.resolve(arg.slice('--decisions='.length));
+    else if (arg.startsWith('--max-season-zero-orphans=')) options.maxSeasonZeroOrphans = Number(arg.slice('--max-season-zero-orphans='.length));
   }
   return options;
 }
@@ -127,11 +143,6 @@ async function loadFullLocalEpisodes(prisma: PrismaClient, userId: string, serie
       watched: ep.watches.length > 0,
     })),
   );
-}
-
-function countOrphanedWatchedEpisodes(localEpisodes: LocalEpisodeInput[], providerEpisodes: ProviderEpisodeInput[]): number {
-  const providerKeys = new Set(providerEpisodes.map((e) => `${e.seasonNumber}:${e.episodeNumber}`));
-  return localEpisodes.filter((e) => e.watched && !providerKeys.has(`${e.seasonNumber}:${e.episodeNumber}`)).length;
 }
 
 interface ProviderFetchResult {
@@ -329,9 +340,16 @@ async function main() {
         now: generatedAt,
       });
 
-      const decisionResult = classifyProviderConfirmationDryRun({ titleYearSanity: sanity, comparison });
+      const orphanedWatchedEpisodes = findOrphanedWatchedEpisodes(fullLocalEpisodes, fetched.episodes);
+      const realSeasonShrinkDetected = detectRealSeasonShrink(fullLocalEpisodes, fetched.episodes);
+      const seasonZeroOrphanCheck = checkBenignSeasonZeroOrphan({
+        localTitle: decision.title,
+        orphanedWatchedEpisodes,
+        realSeasonShrinkDetected,
+        maxOrphanCount: options.maxSeasonZeroOrphans,
+      });
 
-      const orphanedCount = countOrphanedWatchedEpisodes(fullLocalEpisodes, fetched.episodes);
+      const decisionResult = classifyProviderConfirmationDryRun({ titleYearSanity: sanity, comparison, seasonZeroOrphanCheck });
 
       const proposedExternalIdsUpdate = {
         tmdbId: decision.provider === 'tmdb' ? providerId : null,
@@ -364,7 +382,7 @@ async function main() {
         localSeasonShape: localShape,
         providerSeasonShape: providerShape,
         watchedEpisodeCount,
-        watchedEpisodesOrphaned: orphanedCount,
+        watchedEpisodesOrphaned: orphanedWatchedEpisodes.length,
         newEpisodesCount: comparison.newEpisodes.length,
         releasedNewEpisodesCount: comparison.releasedNewEpisodeCount,
         futureNewEpisodesCount: comparison.futureNewEpisodeCount,
@@ -375,6 +393,10 @@ async function main() {
         proposedNextEpisodeChange,
         proposedUserStatusChange,
         warnings: comparison.warnings,
+        orphanSeasonZeroEpisodeCount: seasonZeroOrphanCheck.orphanSeasonZeroEpisodeCount,
+        orphanSeasonZeroEpisodes: seasonZeroOrphanCheck.orphanSeasonZeroEpisodes,
+        realSeasonShapeMatchesProvider: seasonZeroOrphanCheck.realSeasonShapeMatchesProvider,
+        recommendation: decisionResult.recommendation,
       });
 
       console.log(`  [${decisionResult.classification}] ${decision.title} (${decision.provider}:${providerId})`);
