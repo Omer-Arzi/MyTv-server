@@ -1,7 +1,8 @@
 import { UserSeriesStatus } from '@prisma/client';
 import { CompareSeriesCatalogResult } from '../../episode-release-refresh/refresh-logic';
 import { checkTitleYearSanity, classifyProviderConfirmationDryRun } from '../provider-confirmation-decisions-logic';
-import { checkBenignSeasonZeroOrphan, SeasonZeroOrphanCheckResult } from '../season-zero-orphan-logic';
+import { checkBenignSeasonZeroOrphan, EpisodeSeasonPosition, SeasonZeroOrphanCheckResult } from '../season-zero-orphan-logic';
+import { checkSplitEpisodeTailOnly } from '../split-episode-tail-logic';
 
 function fakeComparison(overrides: Partial<CompareSeriesCatalogResult> = {}): CompareSeriesCatalogResult {
   return {
@@ -188,5 +189,94 @@ describe('classifyProviderConfirmationDryRun', () => {
       comparison: fakeComparison({ classification: 'NEEDS_MANUAL_REVIEW', warnings: ['watched episode S1E1 has no matching slot'] }),
     });
     expect(result.classification).toBe('BLOCKED_RISK');
+  });
+
+  describe('SAFE_WITH_SPLIT_EPISODE_TAIL', () => {
+    function officeLocal(): EpisodeSeasonPosition[] {
+      return Array.from({ length: 19 }, (_, i) => ({ seasonNumber: 4, episodeNumber: i + 1 }));
+    }
+    function officeProvider(): EpisodeSeasonPosition[] {
+      return Array.from({ length: 14 }, (_, i) => ({ seasonNumber: 4, episodeNumber: i + 1 }));
+    }
+    const officeTailOrphans = [15, 16, 17, 18, 19].map((n) => ({ id: `s4e${n}`, seasonNumber: 4, episodeNumber: n }));
+
+    it('classifies SAFE_WITH_SPLIT_EPISODE_TAIL for the confirmed The Office (US) tail-only pattern', () => {
+      const splitEpisodeTailCheck = checkSplitEpisodeTailOnly({
+        localTitle: 'The Office (US)',
+        localEpisodes: officeLocal(),
+        providerEpisodes: officeProvider(),
+        orphanedWatchedEpisodes: officeTailOrphans,
+      });
+      const result = classifyProviderConfirmationDryRun({
+        titleYearSanity: passingSanity,
+        comparison: fakeComparison({
+          classification: 'RISKY_DO_NOT_APPLY',
+          warnings: ['season 4 shrank: 19 local episode(s) vs. 14 from the provider'],
+        }),
+        splitEpisodeTailCheck,
+      });
+
+      expect(result.classification).toBe('SAFE_WITH_SPLIT_EPISODE_TAIL');
+      expect(result.recommendation).toBe(
+        'Can be applied later if apply mode preserves unmatched local tail episodes as local-only watched episodes (no delete, no renumber, no overwrite).',
+      );
+      expect(result.tailOrphanedEpisodes).toEqual(officeTailOrphans);
+    });
+
+    it('is distinct from SAFE_TO_APPLY_LATER — the clean-catalog case never sets tailOrphanedEpisodes', () => {
+      const cleanResult = classifyProviderConfirmationDryRun({ titleYearSanity: passingSanity, comparison: fakeComparison({ classification: 'NO_CHANGE' }) });
+      expect(cleanResult.classification).toBe('SAFE_TO_APPLY_LATER');
+      expect(cleanResult.classification).not.toBe('SAFE_WITH_SPLIT_EPISODE_TAIL');
+      expect(cleanResult.tailOrphanedEpisodes).toBeNull();
+    });
+
+    it('is distinct from SAFE_WITH_LOCAL_SPECIAL_ORPHAN — a benign season-0 orphan takes priority and never sets tailOrphanedEpisodes', () => {
+      const seasonZeroOrphanCheck: SeasonZeroOrphanCheckResult = checkBenignSeasonZeroOrphan({
+        localTitle: 'The Big Bang Theory',
+        orphanedWatchedEpisodes: [{ id: 'x', seasonNumber: 0, episodeNumber: 6 }],
+        realSeasonShrinkDetected: false,
+      });
+      const splitEpisodeTailCheck = checkSplitEpisodeTailOnly({
+        localTitle: 'The Big Bang Theory',
+        localEpisodes: [],
+        providerEpisodes: [],
+        orphanedWatchedEpisodes: [],
+      });
+      const result = classifyProviderConfirmationDryRun({
+        titleYearSanity: passingSanity,
+        comparison: fakeComparison({ classification: 'NEEDS_MANUAL_REVIEW', warnings: ["watched episode S0E6 has no matching slot in the provider's current catalog"] }),
+        seasonZeroOrphanCheck,
+        splitEpisodeTailCheck,
+      });
+
+      expect(result.classification).toBe('SAFE_WITH_LOCAL_SPECIAL_ORPHAN');
+      expect(result.classification).not.toBe('SAFE_WITH_SPLIT_EPISODE_TAIL');
+      expect(result.tailOrphanedEpisodes).toBeNull();
+    });
+
+    it('remains BLOCKED_RISK when the split-episode-tail check itself says the pattern is not tail-only (mid-season gap)', () => {
+      const splitEpisodeTailCheck = checkSplitEpisodeTailOnly({
+        localTitle: 'Some Show',
+        localEpisodes: Array.from({ length: 10 }, (_, i) => ({ seasonNumber: 1, episodeNumber: i + 1 })),
+        providerEpisodes: Array.from({ length: 10 }, (_, i) => ({ seasonNumber: 1, episodeNumber: i + 1 })).filter((e) => e.episodeNumber !== 5),
+        orphanedWatchedEpisodes: [{ id: 'x', seasonNumber: 1, episodeNumber: 5 }],
+      });
+      const result = classifyProviderConfirmationDryRun({
+        titleYearSanity: passingSanity,
+        comparison: fakeComparison({ classification: 'NEEDS_MANUAL_REVIEW', warnings: ["watched episode S1E5 has no matching slot in the provider's current catalog"] }),
+        splitEpisodeTailCheck,
+      });
+
+      expect(result.classification).toBe('BLOCKED_RISK');
+      expect(result.tailOrphanedEpisodes).toBeNull();
+    });
+
+    it('omitting splitEpisodeTailCheck entirely behaves as "definitely not a tail" (backward compatible)', () => {
+      const result = classifyProviderConfirmationDryRun({
+        titleYearSanity: passingSanity,
+        comparison: fakeComparison({ classification: 'RISKY_DO_NOT_APPLY', warnings: ['season 4 shrank: 19 local episode(s) vs. 14 from the provider'] }),
+      });
+      expect(result.classification).toBe('BLOCKED_RISK');
+    });
   });
 });

@@ -12,7 +12,8 @@ import 'dotenv/config';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { DEV_USER_ID } from '../src/common/constants';
-import { classifySeriesHealth, LocalEpisodeHealthInput, SeriesHealthInput } from './health-logic';
+import { classifySeriesHealth } from './health-logic';
+import { loadSeriesHealthInputs } from './load-series-health-inputs';
 import { buildLibraryHealthReport, buildMarkdownReport, writeLibraryHealthReports } from './reports';
 
 const DEFAULT_OUT_DIR = path.join(__dirname, 'output');
@@ -37,65 +38,6 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg.startsWith('--out=')) options.outDir = path.resolve(arg.slice('--out='.length));
   }
   return options;
-}
-
-async function loadSeriesHealthInputs(prisma: PrismaClient, userId: string): Promise<SeriesHealthInput[]> {
-  const [allSeries, watches] = await Promise.all([
-    prisma.series.findMany({
-      select: {
-        id: true,
-        title: true,
-        releaseStatus: true,
-        posterUrl: true,
-        backdropUrl: true,
-        externalIds: { select: { tmdbId: true, provider: true, providerId: true, matchConfidence: true, matchSource: true } },
-        seasons: {
-          select: {
-            seasonNumber: true,
-            episodes: { select: { id: true, episodeNumber: true, title: true, airDate: true } },
-          },
-        },
-        progress: { where: { userId }, select: { userStatus: true, nextEpisodeId: true, lastWatchedAt: true } },
-      },
-    }),
-    prisma.episodeWatch.findMany({ where: { userId }, select: { episodeId: true } }),
-  ]);
-
-  const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
-
-  return allSeries.map((series) => {
-    const episodes: LocalEpisodeHealthInput[] = series.seasons.flatMap((season) =>
-      season.episodes.map((ep) => ({
-        id: ep.id,
-        seasonNumber: season.seasonNumber,
-        episodeNumber: ep.episodeNumber,
-        title: ep.title,
-        airDate: ep.airDate,
-        watched: watchedEpisodeIds.has(ep.id),
-      })),
-    );
-
-    return {
-      seriesId: series.id,
-      title: series.title,
-      releaseStatus: series.releaseStatus,
-      posterUrl: series.posterUrl,
-      backdropUrl: series.backdropUrl,
-      externalIds: series.externalIds
-        ? {
-            tmdbId: series.externalIds.tmdbId,
-            provider: series.externalIds.provider,
-            providerId: series.externalIds.providerId,
-            matchConfidence: series.externalIds.matchConfidence,
-            matchSource: series.externalIds.matchSource,
-          }
-        : null,
-      episodes,
-      progress: series.progress[0]
-        ? { userStatus: series.progress[0].userStatus, nextEpisodeId: series.progress[0].nextEpisodeId, lastWatchedAt: series.progress[0].lastWatchedAt }
-        : null,
-    };
-  });
 }
 
 async function main() {

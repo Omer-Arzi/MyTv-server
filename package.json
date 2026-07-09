@@ -33,7 +33,12 @@
     "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts",
     "library-health:missing-provider-candidates": "ts-node library-health/run-missing-provider-candidates.ts",
     "library-health:provider-confirmation": "ts-node library-health/run-provider-confirmation.ts",
-    "library-health:provider-confirmation-dry-run": "ts-node library-health/run-provider-confirmation-dry-run.ts"
+    "library-health:provider-confirmation-dry-run": "ts-node library-health/run-provider-confirmation-dry-run.ts",
+    "library-health:apply-friends-tvmaze": "ts-node library-health/run-apply-provider-confirmation-friends.ts",
+    "library-health:pipeline": "ts-node library-health/run-provider-confirmation-pipeline.ts",
+    "library-health:pipeline-apply": "ts-node library-health/run-provider-confirmation-pipeline.ts --apply-safe-confirmed",
+    "library-health:backfill-tmdb-ids": "ts-node library-health/run-backfill-tmdb-external-ids.ts",
+    "library-health:backfill-tmdb-ids-apply": "ts-node library-health/run-backfill-tmdb-external-ids.ts --apply-tmdb-id-backfill"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

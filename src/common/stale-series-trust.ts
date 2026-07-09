@@ -30,19 +30,24 @@ export const EPISODE_NUMBERING_RISK_LIST_TITLES: string[] = [
 export const KNOWN_SEASON_SHIFT_ORPHAN_TITLES: string[] = ['That Time I Got Reincarnated as a Slime', 'Solar Opposites', 'Ascendance of a Bookworm'];
 
 // Detected automatically (not manually curated, unlike the two lists
-// above) by episode-release-refresh/refresh-logic.ts's dry-run season-shift
-// guard: TMDb's current live catalog *shape* — season count and/or
-// per-season episode count — no longer lines up with what MyTv has stored
-// locally for these series, and at least one already-watched episode has
-// no matching slot in TMDb's response at all. Unlike
-// KNOWN_SEASON_SHIFT_ORPHAN_TITLES (confirmed via an actual enrichment
-// apply that already ran and left orphaned watches), no apply was ever
-// attempted for any of these — this is a pre-apply structural comparison
-// only, kept as its own list so each title's provenance/detection method
-// stays traceable. See docs/episode-numbering-and-season-shift-risk.md's
-// "Newly detected by episode-release-refresh dry run" section for the
-// per-title detail (e.g. Kaiju No. 8: 2 local seasons/34 episodes vs.
-// TMDb's 1 season/23 episodes).
+// above) by a live season/episode-shape comparison against TMDb — either
+// episode-release-refresh/refresh-logic.ts's dry-run season-shift guard, or
+// library-health/incomplete-catalog-investigation.ts's per-series TMDb
+// comparison (same underlying compareSeriesCatalog logic, run against
+// series the Library Health report already flagged INCOMPLETE_CATALOG).
+// TMDb's current live catalog *shape* — season count and/or per-season
+// episode count — no longer lines up with what MyTv has stored locally for
+// these series, and at least one already-watched episode has no matching
+// slot in TMDb's response at all. Unlike KNOWN_SEASON_SHIFT_ORPHAN_TITLES
+// (confirmed via an actual enrichment apply that already ran and left
+// orphaned watches), no apply was ever attempted for any of these — this is
+// a pre-apply structural comparison only, kept as its own list so each
+// title's provenance/detection method stays traceable. See
+// docs/episode-numbering-and-season-shift-risk.md's "Newly detected by
+// episode-release-refresh dry run" and "Detected by incomplete-catalog
+// investigation" sections for the per-title detail (e.g. Kaiju No. 8: 2
+// local seasons/34 episodes vs. TMDb's 1 season/23 episodes; Dragon Ball
+// GT: 3 local seasons/112 episodes vs. TMDb's 1 season/64).
 export const PROVIDER_STRUCTURE_MISMATCH_TITLES: string[] = [
   'Kaiju No. 8',
   'DAN DA DAN',
@@ -50,6 +55,10 @@ export const PROVIDER_STRUCTURE_MISMATCH_TITLES: string[] = [
   "Frieren: Beyond Journey's End",
   'Sket Dance',
   'Tokyo Revengers',
+  'Dragon Ball GT',
+  'The Seven Deadly Sins: Four Knights of the Apocalypse',
+  'Seraph of the End',
+  'Tales of Zestiria the X',
 ];
 
 export function isUntrustedNextEpisodeTitle(title: string): boolean {

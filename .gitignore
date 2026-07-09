@@ -18,3 +18,16 @@ manual-progress-corrections/output/
 episode-release-refresh/output/
 library-health/output/
 db-backups/
+
+# Real provider-confirmation decisions for this user's specific TV
+# library — titles, matched provider IDs, and personal watch-state notes
+# (e.g. "user thinks they watched about 3 seasons"). Not shareable.
+# provider-confirmation-decisions.example.json is the checked-in
+# template/schema instead — that one stays tracked.
+library-health/provider-confirmation-decisions.json
+library-health/*.scratch.json
+
+# One-off scratch scripts created during manual investigation or a
+# scoped apply run — never meant to be committed.
+_tmp-*
+*.tmp

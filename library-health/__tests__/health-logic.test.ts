@@ -115,6 +115,18 @@ describe('classifySeriesHealth — provider structure risk', () => {
     expect(result.recommendedNextAction).toBe('NEEDS_ABSOLUTE_NUMBERING_PROVIDER');
   });
 
+  it('classifies a title detected by the incomplete-catalog investigation the same way', () => {
+    const result = classifySeriesHealth(baseInput({ title: 'Dragon Ball GT', progress: activeProgress }));
+    expect(result.classification).toBe('PROVIDER_STRUCTURE_RISK');
+    expect(result.recommendedNextAction).toBe('NEEDS_ABSOLUTE_NUMBERING_PROVIDER');
+    expect(result.riskFlags).toContain('RISK_LISTED_PROVIDER_STRUCTURE_MISMATCH');
+  });
+
+  it('does not flag Superstore as risk-listed — a specials/season-0 mismatch, deliberately left for human review instead', () => {
+    const result = classifySeriesHealth(baseInput({ title: 'Superstore', progress: activeProgress }));
+    expect(result.classification).not.toBe('PROVIDER_STRUCTURE_RISK');
+  });
+
   it('classifies a known season-shift-orphan title as PROVIDER_STRUCTURE_RISK with the generic MARK_AS_RISK action', () => {
     const result = classifySeriesHealth(baseInput({ title: 'Solar Opposites', progress: activeProgress }));
     expect(result.classification).toBe('PROVIDER_STRUCTURE_RISK');

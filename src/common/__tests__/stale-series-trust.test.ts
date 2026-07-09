@@ -14,15 +14,18 @@ describe('isUntrustedNextEpisodeTitle', () => {
     expect(isUntrustedNextEpisodeTitle(title)).toBe(true);
   });
 
-  // These six were found automatically by episode-release-refresh's dry-run
-  // season-shift guard (docs/episode-numbering-and-season-shift-risk.md's
-  // "Newly detected by episode-release-refresh dry run" section) — not
-  // manually declared beforehand, unlike the two lists above.
+  // These were found automatically by a live TMDb structural comparison —
+  // either episode-release-refresh's dry-run season-shift guard, or
+  // library-health/incomplete-catalog-investigation.ts's targeted per-series
+  // check (docs/episode-numbering-and-season-shift-risk.md's "Newly detected
+  // by episode-release-refresh dry run" and "Detected by incomplete-catalog
+  // investigation" sections) — not manually declared beforehand, unlike the
+  // two lists above.
   it.each(PROVIDER_STRUCTURE_MISMATCH_TITLES)('flags newly-detected provider-structure-mismatch title "%s"', (title) => {
     expect(isUntrustedNextEpisodeTitle(title)).toBe(true);
   });
 
-  it('lists exactly the six newly detected provider-structure-mismatch titles', () => {
+  it('lists exactly the ten newly detected provider-structure-mismatch titles', () => {
     expect(PROVIDER_STRUCTURE_MISMATCH_TITLES).toEqual([
       'Kaiju No. 8',
       'DAN DA DAN',
@@ -30,7 +33,15 @@ describe('isUntrustedNextEpisodeTitle', () => {
       "Frieren: Beyond Journey's End",
       'Sket Dance',
       'Tokyo Revengers',
+      'Dragon Ball GT',
+      'The Seven Deadly Sins: Four Knights of the Apocalypse',
+      'Seraph of the End',
+      'Tales of Zestiria the X',
     ]);
+  });
+
+  it('does not flag Superstore — a specials/season-0 mismatch, deliberately not risk-listed (see docs)', () => {
+    expect(isUntrustedNextEpisodeTitle('Superstore')).toBe(false);
   });
 
   it('does not flag an ordinary, unrelated title', () => {

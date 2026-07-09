@@ -1,54 +1,21 @@
 [
   {
-    "title": "The Big Bang Theory",
+    "title": "Example Show Title",
     "decision": "confirm",
     "provider": "tmdb",
-    "providerId": 1418,
-    "notes": "Exact title match; 1 episode gap within tolerance. From library-health:provider-confirmation READY_FOR_HUMAN_CONFIRMATION."
+    "providerId": 12345,
+    "notes": "Why a human picked this candidate: exact title/year match, N-episode gap within tolerance, etc."
   },
   {
-    "title": "Modern Family",
+    "title": "Another Example Show",
     "decision": "confirm",
     "provider": "tvmaze",
-    "providerId": 80,
-    "notes": "TVmaze cleaner match than TMDb (exact title, no episode-count gap). From library-health:provider-confirmation NEEDS_TVMAZE_OVER_TMDB."
+    "providerId": 678,
+    "notes": "TVmaze was the cleaner match than TMDb for this title (exact title, no episode-count gap)."
   },
   {
-    "title": "How I Met Your Mother",
-    "decision": "confirm",
-    "provider": "tvmaze",
-    "providerId": 171,
-    "notes": "TVmaze cleaner match than TMDb. From library-health:provider-confirmation NEEDS_TVMAZE_OVER_TMDB."
-  },
-  {
-    "title": "Friends",
-    "decision": "confirm",
-    "provider": "tvmaze",
-    "providerId": 431,
-    "notes": "TVmaze's 1994 candidate is an exact title/year match with a 0-episode gap. A second TVmaze candidate (id 46948) is an unrelated 1979 show sharing the same title — ignored, not this one."
-  },
-  {
-    "title": "The Office (US)",
-    "decision": "confirm",
-    "provider": "tmdb",
-    "providerId": 2316,
-    "notes": "Best available candidate, but has a 9-episode gap vs local (195 watched vs 186 known) — requires a sanity check before trusting fully, per library-health:provider-confirmation STILL_AMBIGUOUS."
-  },
-  {
-    "title": "The Flash (2014)",
-    "decision": "confirm",
-    "provider": "tmdb",
-    "providerId": 60735,
-    "notes": "Correct 2014 candidate (exact title/year, 6-episode gap). A TVmaze candidate (id 7079) is an unrelated 1967 serial sharing the title — ignored, not this one."
-  },
-  {
-    "title": "Naruto Shippuden",
+    "title": "Deferred Example Show",
     "decision": "defer",
-    "notes": "Excluded from this pass — higher structural risk (close competitor + long-running anime), deferred per library-health:provider-confirmation."
-  },
-  {
-    "title": "Doctor Who (2005)",
-    "decision": "defer",
-    "notes": "Excluded from this pass — higher structural risk, deferred per library-health:provider-confirmation."
+    "notes": "Excluded from this pass — explain why (higher structural risk, close competitor, needs more investigation, etc.)."
   }
 ]

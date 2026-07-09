@@ -46,7 +46,12 @@ export interface DryRunSeriesEntry {
   orphanSeasonZeroEpisodeCount: number | null;
   orphanSeasonZeroEpisodes: OrphanedWatchedEpisode[] | null;
   realSeasonShapeMatchesProvider: boolean | null;
-  // Only ever set alongside classification === 'SAFE_WITH_LOCAL_SPECIAL_ORPHAN'.
+  // Only ever set alongside classification === 'SAFE_WITH_SPLIT_EPISODE_TAIL'
+  // — the tail orphan rows a future apply step must preserve as-is
+  // (no delete, no renumber, no overwrite). See split-episode-tail-logic.ts.
+  tailOrphanedEpisodes: OrphanedWatchedEpisode[] | null;
+  // Only ever set alongside classification === 'SAFE_WITH_LOCAL_SPECIAL_ORPHAN'
+  // or 'SAFE_WITH_SPLIT_EPISODE_TAIL'.
   recommendation: string | null;
 }
 
@@ -68,6 +73,7 @@ export interface ProviderConfirmationDryRunReport {
 const ALL_CLASSIFICATIONS: DryRunClassification[] = [
   'SAFE_TO_APPLY_LATER',
   'SAFE_WITH_LOCAL_SPECIAL_ORPHAN',
+  'SAFE_WITH_SPLIT_EPISODE_TAIL',
   'NEEDS_MANUAL_REVIEW',
   'BLOCKED_RISK',
   'PROVIDER_NOT_FOUND',
@@ -106,6 +112,7 @@ export function buildProviderConfirmationDryRunReport(input: {
 const CLASSIFICATION_LABELS: Record<DryRunClassification, string> = {
   SAFE_TO_APPLY_LATER: 'Safe to apply later',
   SAFE_WITH_LOCAL_SPECIAL_ORPHAN: 'Safe, with a local special orphan',
+  SAFE_WITH_SPLIT_EPISODE_TAIL: 'Safe, with a split-episode tail',
   NEEDS_MANUAL_REVIEW: 'Needs manual review',
   BLOCKED_RISK: 'Blocked — risk',
   PROVIDER_NOT_FOUND: 'Provider not found',
@@ -164,6 +171,11 @@ export function buildProviderConfirmationDryRunMarkdownReport(report: ProviderCo
       if (entry.orphanSeasonZeroEpisodeCount !== null) {
         lines.push(
           `- Season-0 orphans: ${entry.orphanSeasonZeroEpisodeCount}${entry.orphanSeasonZeroEpisodes && entry.orphanSeasonZeroEpisodes.length > 0 ? ` (${entry.orphanSeasonZeroEpisodes.map((e) => `S${e.seasonNumber}E${e.episodeNumber}`).join(', ')})` : ''} · Real seasons match provider: ${entry.realSeasonShapeMatchesProvider === null ? '_?_' : entry.realSeasonShapeMatchesProvider ? 'yes' : 'no'}`,
+        );
+      }
+      if (entry.tailOrphanedEpisodes && entry.tailOrphanedEpisodes.length > 0) {
+        lines.push(
+          `- Split-episode tail orphans (to be preserved, not deleted/renumbered/overwritten): ${entry.tailOrphanedEpisodes.map((e) => `S${e.seasonNumber}E${e.episodeNumber}`).join(', ')}`,
         );
       }
       if (entry.recommendation) lines.push(`- **Recommendation**: ${entry.recommendation}`);

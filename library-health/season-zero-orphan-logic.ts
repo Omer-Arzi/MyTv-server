@@ -14,8 +14,11 @@
 // How I Met Your Mother, The Flash (2014), Superstore.
 //
 // Confirmed real case this must NOT catch: The Office (US), whose seasons
-// 4, 6, and 7 each genuinely shrank on the provider side, orphaning 9
-// watched episodes across real (non-zero) seasons — that stays blocked.
+// 4, 6, and 7 each have real (non-zero) season orphans, not season-0
+// ones — this module correctly refuses to call that benign. (Those
+// specific orphans turned out to be a tail-only split/merged-episode
+// numbering difference, not real content loss — see
+// split-episode-tail-logic.ts, a separate, orthogonal check.)
 
 import { isUntrustedNextEpisodeTitle } from '../src/common/stale-series-trust';
 

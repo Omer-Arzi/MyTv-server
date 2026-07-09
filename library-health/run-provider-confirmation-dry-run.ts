@@ -1,14 +1,22 @@
-// Provider Confirmation Decisions — DRY RUN ONLY. Takes a human-authored
-// decision file (see provider-confirmation-decisions.example.json) and, for
-// each "confirm" decision, fetches the selected provider's catalog and
-// simulates exactly what an eventual apply step would do — new episodes,
-// field changes, proposed ExternalIds/poster/backdrop, and
-// UserSeriesProgress recomputation — without writing any of it.
+// Provider Confirmation Decisions — DRY RUN ONLY. Takes the human-maintained
+// decisions file (library-health/provider-confirmation-decisions.json — the
+// source of truth for which provider match a human has reviewed and
+// approved; see provider-confirmation-decisions.example.json for the
+// template/schema only, not real data) and, for each "confirm" decision,
+// fetches the selected provider's catalog and simulates exactly what an
+// eventual apply step would do — new episodes, field changes, proposed
+// ExternalIds/poster/backdrop, and UserSeriesProgress recomputation —
+// without writing any of it.
 //
 // This NEVER writes anything: no ExternalIds row, no Episode/Season row, no
 // UserSeriesProgress update, no apply mode, ever, in this script. A real
-// apply step is deliberately a separate, not-yet-built piece of work — see
-// the task this was built for.
+// apply step (e.g. run-apply-provider-confirmation-friends.ts) is a
+// separate, narrowly-scoped, explicitly-flagged script. Reports written by
+// this script under library-health/output/ are generated and disposable —
+// they are regenerated every run and are gitignored. The only durable,
+// persisted record of an actually-applied match is the ExternalIds table
+// in the database (provider/providerId/matchConfidence/matchSource/
+// matchedAt columns), written only by an apply script's transaction.
 
 import 'dotenv/config';
 import path from 'path';
@@ -25,6 +33,7 @@ import { buildSeasonShape, SeasonShape } from '../tmdb-enrichment/season-structu
 import { loadSeriesHealthInputs } from './load-series-health-inputs';
 import { checkTitleYearSanity, classifyProviderConfirmationDryRun, ProviderConfirmationDecision } from './provider-confirmation-decisions-logic';
 import { checkBenignSeasonZeroOrphan, detectRealSeasonShrink, findOrphanedWatchedEpisodes } from './season-zero-orphan-logic';
+import { checkSplitEpisodeTailOnly } from './split-episode-tail-logic';
 import {
   buildProviderConfirmationDryRunMarkdownReport,
   buildProviderConfirmationDryRunReport,
@@ -33,7 +42,7 @@ import {
 } from './provider-confirmation-decisions-reports';
 
 const DEFAULT_OUT_DIR = path.join(__dirname, 'output');
-const DEFAULT_DECISIONS_PATH = path.join(__dirname, 'provider-confirmation-decisions.example.json');
+const DEFAULT_DECISIONS_PATH = path.join(__dirname, 'provider-confirmation-decisions.json');
 
 // The "no comparison was attempted" shape shared by every early-return path
 // below (excluded/skip/defer/not-found) — spread and overridden with real
@@ -57,6 +66,7 @@ const EMPTY_COMPARISON_FIELDS = {
   orphanSeasonZeroEpisodeCount: null,
   orphanSeasonZeroEpisodes: null,
   realSeasonShapeMatchesProvider: null,
+  tailOrphanedEpisodes: null,
   recommendation: null,
 } as const;
 
@@ -348,8 +358,14 @@ async function main() {
         realSeasonShrinkDetected,
         maxOrphanCount: options.maxSeasonZeroOrphans,
       });
+      const splitEpisodeTailCheck = checkSplitEpisodeTailOnly({
+        localTitle: decision.title,
+        localEpisodes: fullLocalEpisodes,
+        providerEpisodes: fetched.episodes,
+        orphanedWatchedEpisodes,
+      });
 
-      const decisionResult = classifyProviderConfirmationDryRun({ titleYearSanity: sanity, comparison, seasonZeroOrphanCheck });
+      const decisionResult = classifyProviderConfirmationDryRun({ titleYearSanity: sanity, comparison, seasonZeroOrphanCheck, splitEpisodeTailCheck });
 
       const proposedExternalIdsUpdate = {
         tmdbId: decision.provider === 'tmdb' ? providerId : null,
@@ -396,6 +412,7 @@ async function main() {
         orphanSeasonZeroEpisodeCount: seasonZeroOrphanCheck.orphanSeasonZeroEpisodeCount,
         orphanSeasonZeroEpisodes: seasonZeroOrphanCheck.orphanSeasonZeroEpisodes,
         realSeasonShapeMatchesProvider: seasonZeroOrphanCheck.realSeasonShapeMatchesProvider,
+        tailOrphanedEpisodes: decisionResult.tailOrphanedEpisodes,
         recommendation: decisionResult.recommendation,
       });
 

@@ -57,6 +57,19 @@ Unlike every series above (found by manual inspection, or by TVmaze/TV-Time-pari
 
 These six are recorded in `src/common/stale-series-trust.ts` as `PROVIDER_STRUCTURE_MISMATCH_TITLES` — a third list, distinct from `EPISODE_NUMBERING_RISK_LIST_TITLES` (§5 below, manually curated) and `KNOWN_SEASON_SHIFT_ORPHAN_TITLES` (confirmed only after a real enrichment apply already ran and orphaned watches) — because their provenance is different from both: detected pre-apply, by automated catalog-shape comparison, with no apply ever attempted. `isUntrustedNextEpisodeTitle` treats all three lists identically (excluded from Watch Next/stale-series trust and from `episode-release-refresh`'s eligible-candidate set), so the distinction is about *why* a title is on a list, not about differing runtime behavior.
 
+### Detected by incomplete-catalog investigation
+
+A second, independent detection pass: `library-health/run-health-report.ts` flagged 5 series `INCOMPLETE_CATALOG` (stored `nextEpisodeId` didn't match what the local catalog + watch history actually compute), and `library-health/run-incomplete-catalog-investigation.ts` then ran the same live TMDb structural comparison (`compareSeriesCatalog`, reused from `episode-release-refresh/refresh-logic.ts`) against each one specifically to find out *why*. 4 of the 5 turned out to be the same season/episode-shape mismatch pattern documented throughout this file — confirmed live against TMDb, not just inferred from local data:
+
+- **Dragon Ball GT** — local 3 seasons / 112 episodes vs. TMDb 1 season / 64 episodes. 64 is the real episode count for this show; 112 locally strongly suggests other Dragon Ball franchise entries (Z, Kai, Super — already on the `POSSIBLE_ANIME_NUMBERING_MISMATCH` watchlist in §2 above) got merged into this series row during import, not just a numbering-convention difference.
+- **The Seven Deadly Sins: Four Knights of the Apocalypse** — local 2 seasons / 48 episodes vs. TMDb 1 season / 36 episodes. Same consolidation pattern as Dragon Ball GT.
+- **Seraph of the End** — local season 1 alone has 24 episodes; TMDb's season 1 has 12. Reads as two real cours ("Vampire Reign" + "Battle in Nagoya") merged into one local season.
+- **Tales of Zestiria the X** — local season 1 has 25 episodes; TMDb's season 1 has 12. Same per-cour merging pattern.
+
+All four are recorded in `PROVIDER_STRUCTURE_MISMATCH_TITLES` alongside the six from the episode-release-refresh pass above — same list, since the detection method (live TMDb structural comparison, pre-apply, no enrichment ever attempted) and the resulting trust/action implications are identical regardless of which pipeline happened to trigger the check.
+
+**Superstore is deliberately excluded from this list.** Its investigation result looks structurally different from the other four: local 7 seasons / 114 episodes vs. TMDb 6 seasons / 113 — a one-episode gap, entirely accounted for by a local "season 0" special (`S0E1`) that TMDb's response doesn't include. Every real, numbered season lines up exactly (113 = 113 once the special is set aside). This is not an anime absolute-numbering/cour-merging mismatch — it's a specials/season-0 counting inconsistency, exactly the third bullet in §1's problem list ("season 0 / OVA / recap episodes are counted inconsistently"), and Superstore is a live-action sitcom with no numbering-convention ambiguity otherwise. `stale-series-trust.ts` has no dedicated "specials/season-0 mismatch" category today — only the general `EPISODE_NUMBERING_RISK_LIST_TITLES` / `KNOWN_SEASON_SHIFT_ORPHAN_TITLES` / `PROVIDER_STRUCTURE_MISMATCH_TITLES` three, all of which describe a real numbering/structural hazard broader than "one special episode TMDb doesn't happen to track." Hard-risk-listing Superstore on those terms would overstate the problem and mute a series that's otherwise completely fine to treat normally. It is intentionally **not** added to any risk list — flagged here as needing human review instead: a reviewer should confirm whether the local `S0E1` special is legitimate (keep as-is, no action needed) or a bad import row (candidate for correction), but either way it does not belong in the same bucket as a genuine season-shift/absolute-numbering case. If a dedicated specials/season-0 category is ever added to `stale-series-trust.ts`, Superstore is the first candidate for it.
+
 ## 3. Why this is dangerous
 
 - Provider enrichment can create episodes that **look unwatched but are actually duplicates of content the user already watched**, just numbered differently.
@@ -84,5 +97,9 @@ Not implemented yet. Direction for a future pass:
 - One Piece
 - InuYasha / InuYasha: The Final Act
 - Kaiju No. 8, DAN DA DAN, Shangri-La Frontier, Frieren: Beyond Journey's End, Sket Dance, Tokyo Revengers — see "Newly detected by episode-release-refresh dry run" in §2 above
+- Dragon Ball GT, The Seven Deadly Sins: Four Knights of the Apocalypse, Seraph of the End, Tales of Zestiria the X — see "Detected by incomplete-catalog investigation" in §2 above
+
+**Needs human review, not yet risk-listed:**
+- Superstore — a specials/season-0 counting mismatch, not a numbering-convention hazard; see "Detected by incomplete-catalog investigation" in §2 above for why this is deliberately handled differently from the titles above it.
 
 This list should be treated as a minimum, not exhaustive — any series flagged `POSSIBLE_ANIME_NUMBERING_MISMATCH`, `POSSIBLE_REMAKE_COLLISION`, or appearing in a duplicate-title group (see §2 above) should be treated with the same caution until individually checked. All titles listed here (across every category) are enforced in code via `src/common/stale-series-trust.ts`'s `isUntrustedNextEpisodeTitle` — `EPISODE_NUMBERING_RISK_LIST_TITLES`, `KNOWN_SEASON_SHIFT_ORPHAN_TITLES`, and `PROVIDER_STRUCTURE_MISMATCH_TITLES` together.
