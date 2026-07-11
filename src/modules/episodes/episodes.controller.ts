@@ -1,5 +1,5 @@
 import { Controller, Param, Post } from '@nestjs/common';
-import { ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types';
 import { EpisodeWatchService } from './episode-watch.service';
@@ -16,7 +16,10 @@ export class EpisodesController {
     description:
       'Idempotent: calling this again for the same episode just refreshes watchedAt. ' +
       'Always returns the next episode in the series so a client can deterministically ' +
-      'replace a swiped card; if there is no next episode, the series is marked completed.',
+      'replace a swiped card; if there is no next episode, the series is marked completed. ' +
+      'A not-yet-released episode (airDate in the future, or null) is rejected with 400 — ' +
+      'this is the regular user-facing flow, not the import path, and Watch Next must never ' +
+      'expose an unreleased episode as watchable.',
   })
   @ApiParam({ name: 'episodeId', description: 'Episode id', example: '3f6b1e2a-8c1d-4b2a-9e2e-222222222222' })
   @ApiOkResponse({
@@ -60,6 +63,7 @@ export class EpisodesController {
     },
   })
   @ApiNotFoundResponse({ description: 'Episode not found' })
+  @ApiBadRequestResponse({ description: 'The episode has not been released yet (airDate is in the future or unknown)' })
   markWatched(
     @CurrentUser() user: RequestUser,
     @Param('episodeId') episodeId: string,

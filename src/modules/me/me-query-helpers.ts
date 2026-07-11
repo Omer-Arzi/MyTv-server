@@ -104,10 +104,22 @@ export function filterNonStaleWatchNextCandidates<T extends StaleCandidateProgre
 
 // --- Watch Next "+N" remaining-episodes indicator (mobile Continue
 // Watching card) -----------------------------------------------------------
+//
+// Contract (docs/watch-next-released-episode-semantics-todo.md): this is a
+// count of RELEASED, UNWATCHED episodes only — never a raw catalog
+// position. A future-dated episode already known locally (e.g. inserted
+// upfront by an enrichment apply, same shape as the X-Men '97 case that
+// motivated this) must never inflate this number. The field name
+// (remainingEpisodesAfterNext) is unchanged from before this fix — it now
+// has exactly one meaning (released+unwatched), not a mixture, so the
+// "avoid ambiguous names for mixed content" concern this fix exists to
+// satisfy no longer applies to it; renaming would touch the DTO, mobile
+// type, mobile formatter, and every existing test for no behavior gain.
 
 export interface OrderedEpisodeForRemainingCount {
   id: string;
   seriesId: string;
+  airDate: Date | null;
 }
 
 // Groups an already (seasonNumber, episodeNumber)-ordered flat episode list
@@ -115,31 +127,45 @@ export interface OrderedEpisodeForRemainingCount {
 // see e.g. episode-watch.service.ts's findNextEpisode) by seriesId,
 // preserving each series' relative order. Built once for a whole batch of
 // Watch Next candidates (one query, grouped in memory) rather than once per
-// series, to avoid an N+1 query per row in the Watch Next list.
-export function groupOrderedEpisodeIdsBySeriesId(episodes: readonly OrderedEpisodeForRemainingCount[]): Map<string, string[]> {
-  const bySeriesId = new Map<string, string[]>();
+// series, to avoid an N+1 query per row in the Watch Next list. Keeps full
+// episode objects (not just ids) — computeRemainingEpisodesAfterNext needs
+// each episode's airDate to apply the canonical released predicate.
+export function groupOrderedEpisodesBySeriesId(
+  episodes: readonly OrderedEpisodeForRemainingCount[],
+): Map<string, OrderedEpisodeForRemainingCount[]> {
+  const bySeriesId = new Map<string, OrderedEpisodeForRemainingCount[]>();
   for (const episode of episodes) {
     const existing = bySeriesId.get(episode.seriesId);
     if (existing) {
-      existing.push(episode.id);
+      existing.push(episode);
     } else {
-      bySeriesId.set(episode.seriesId, [episode.id]);
+      bySeriesId.set(episode.seriesId, [episode]);
     }
   }
   return bySeriesId;
 }
 
-// How many known catalog episodes come after the displayed next episode —
-// NOT counting the next episode itself. `orderedEpisodeIds` must already be
-// sorted (seasonNumber, episodeNumber) ascending for the whole series.
-// Returns null — never 0 — when nextEpisodeId isn't found in the given list
-// at all. That should be structurally impossible (nextEpisodeId always
-// points at a real episode of this series), but is treated as "position
-// could not be reliably determined" rather than silently reported as "no
-// more episodes": the mobile client renders nothing rather than a possibly
-// wrong `+0`/"Final episode" for this case.
-export function computeRemainingEpisodesAfterNext(orderedEpisodeIds: readonly string[], nextEpisodeId: string): number | null {
-  const index = orderedEpisodeIds.indexOf(nextEpisodeId);
+// How many RELEASED, UNWATCHED catalog episodes come after the displayed
+// next episode — not counting the next episode itself, and never counting
+// a not-yet-released episode no matter where it sits positionally.
+// `orderedEpisodes` must already be sorted (seasonNumber, episodeNumber)
+// ascending for the whole series. Uses the project's one canonical
+// released predicate (isEpisodeReleased) — no separate release-date
+// comparison logic here.
+//
+// Returns null — never 0 — when nextEpisodeId isn't found in the given
+// list at all. That should be structurally impossible (nextEpisodeId
+// always points at a real episode of this series), but is treated as
+// "position could not be reliably determined" rather than silently
+// reported as "no more episodes": the mobile client renders nothing rather
+// than a possibly wrong `+0`/"Final episode" for this case.
+export function computeRemainingEpisodesAfterNext(
+  orderedEpisodes: readonly OrderedEpisodeForRemainingCount[],
+  nextEpisodeId: string,
+  watchedEpisodeIds: ReadonlySet<string>,
+  now: Date = new Date(),
+): number | null {
+  const index = orderedEpisodes.findIndex((e) => e.id === nextEpisodeId);
   if (index === -1) return null;
-  return orderedEpisodeIds.length - index - 1;
+  return orderedEpisodes.slice(index + 1).filter((e) => !watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate, now)).length;
 }

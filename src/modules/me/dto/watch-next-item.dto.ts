@@ -24,7 +24,9 @@ export class WatchNextItemDto {
     example: 87,
     nullable: true,
     description:
-      'How many known catalog episodes come after nextEpisode, in (seasonNumber, episodeNumber) order — nextEpisode itself is not counted. ' +
+      'How many RELEASED, UNWATCHED catalog episodes come after nextEpisode, in (seasonNumber, episodeNumber) order — nextEpisode itself ' +
+      'is not counted, and a not-yet-released episode is never counted regardless of its catalog position (future episodes stay in the ' +
+      'catalog for series-detail/upcoming views but are never watchable and never contribute to this count). ' +
       'Null when this could not be reliably determined (should not normally happen); clients should render nothing rather than assume 0.',
   })
   remainingEpisodesAfterNext: number | null;

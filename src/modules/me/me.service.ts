@@ -10,7 +10,7 @@ import {
   computeRemainingEpisodesAfterNext,
   filterNonStaleWatchNextCandidates,
   filterTrustedStaleCandidates,
-  groupOrderedEpisodeIdsBySeriesId,
+  groupOrderedEpisodesBySeriesId,
 } from './me-query-helpers';
 import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 
@@ -93,7 +93,7 @@ export class MeService {
     });
 
     const candidates = filterNonStaleWatchNextCandidates(progress, staleCutoff);
-    const remainingEpisodesAfterNextBySeriesId = await this.getRemainingEpisodesAfterNextBySeriesId(candidates);
+    const remainingEpisodesAfterNextBySeriesId = await this.getRemainingEpisodesAfterNextBySeriesId(userId, candidates);
 
     return candidates.map((p) => ({
       series: toSeriesSummary(p.series),
@@ -109,27 +109,38 @@ export class MeService {
   // one query per series. Only ever called with the already-filtered Watch
   // Next candidate list (never the full unfiltered progress set), so this
   // never fetches catalog data for a series that won't actually be
-  // returned by getWatchNext.
+  // returned by getWatchNext. Also fetches this user's EpisodeWatch rows
+  // for the batch (previously not fetched at all here) — the count must
+  // exclude both future-dated AND already-watched episodes, not just
+  // apply a raw catalog position (docs/watch-next-released-episode-semantics-todo.md).
   private async getRemainingEpisodesAfterNextBySeriesId(
+    userId: string,
     candidates: { seriesId: string; nextEpisode: { id: string } }[],
   ): Promise<Map<string, number | null>> {
     if (candidates.length === 0) return new Map();
 
     const seriesIds = [...new Set(candidates.map((c) => c.seriesId))];
-    const episodes = await this.prisma.episode.findMany({
-      where: { season: { seriesId: { in: seriesIds } } },
-      orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-      select: { id: true, season: { select: { seriesId: true } } },
-    });
+    const [episodes, watches] = await Promise.all([
+      this.prisma.episode.findMany({
+        where: { season: { seriesId: { in: seriesIds } } },
+        orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
+        select: { id: true, airDate: true, season: { select: { seriesId: true } } },
+      }),
+      this.prisma.episodeWatch.findMany({
+        where: { userId, episode: { season: { seriesId: { in: seriesIds } } } },
+        select: { episodeId: true },
+      }),
+    ]);
+    const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
 
-    const orderedEpisodeIdsBySeriesId = groupOrderedEpisodeIdsBySeriesId(
-      episodes.map((episode) => ({ id: episode.id, seriesId: episode.season.seriesId })),
+    const orderedEpisodesBySeriesId = groupOrderedEpisodesBySeriesId(
+      episodes.map((episode) => ({ id: episode.id, seriesId: episode.season.seriesId, airDate: episode.airDate })),
     );
 
     const result = new Map<string, number | null>();
     for (const candidate of candidates) {
-      const orderedEpisodeIds = orderedEpisodeIdsBySeriesId.get(candidate.seriesId) ?? [];
-      result.set(candidate.seriesId, computeRemainingEpisodesAfterNext(orderedEpisodeIds, candidate.nextEpisode.id));
+      const orderedEpisodes = orderedEpisodesBySeriesId.get(candidate.seriesId) ?? [];
+      result.set(candidate.seriesId, computeRemainingEpisodesAfterNext(orderedEpisodes, candidate.nextEpisode.id, watchedEpisodeIds));
     }
     return result;
   }

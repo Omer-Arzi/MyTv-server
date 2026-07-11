@@ -3,6 +3,7 @@ import { UserSeriesStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { deriveUserStatusFromNextEpisode } from '../../common/derive-user-status';
+import { isEpisodeReleased } from '../../common/is-episode-released';
 import { checkWatchAllAllowed, planWatchAll, recomputeProgressAfterWatchAll } from '../../common/watch-all-logic';
 import { checkUnwatchAllowed, recomputeProgressAfterUnwatch } from '../../common/unwatch-logic';
 import { findFirstUnwatchedEpisodeId, OrderedEpisodeForNextLookup } from '../series/series-query-helpers';
@@ -23,6 +24,25 @@ export class EpisodeWatchService {
     });
     if (!episode) {
       throw new NotFoundException(`Episode ${episodeId} not found`);
+    }
+
+    // Server-side enforcement of Watch Next's "released episodes only"
+    // contract, not just a UI convenience — this is the regular single-
+    // episode "mark watched" flow (POST /episodes/:episodeId/watch), the
+    // one reachable from a Watch Next card tap or a series-detail episode
+    // row. A not-yet-released episode is rejected here before any
+    // EpisodeWatch row is created or progress is touched. Reuses the same
+    // canonical isEpisodeReleased predicate every other release-date
+    // decision in this app already uses — no separate rule.
+    //
+    // Deliberately does NOT apply to import (import-tvtime/normalize-watched-episodes.ts
+    // writes EpisodeWatch directly via its own upsertEpisodeWatch, never
+    // through this method) — that path is recording real historical watch
+    // events, not a live "watch next" action, and must stay unaffected.
+    if (!isEpisodeReleased(episode.airDate)) {
+      throw new BadRequestException(
+        `Episode ${episodeId} has not been released yet (airDate: ${episode.airDate?.toISOString() ?? 'unknown'}) — it cannot be marked watched`,
+      );
     }
 
     const seriesId = episode.season.seriesId;
