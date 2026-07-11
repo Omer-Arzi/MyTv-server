@@ -3,34 +3,53 @@ import { UserSeriesStatus } from '@prisma/client';
 import { toSeriesSummary } from '../../common/mappers';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WatchlistItemDto } from './dto/watchlist-item.dto';
+import { buildWatchlistTabWhere, isWatchlistTabEligible } from './watchlist-query-helpers';
+import { classifySeriesForAttention } from '../../common/classify-series-for-attention';
+import { hasConfirmedExternalId } from '../../common/has-confirmed-external-id';
 
 @Injectable()
 export class WatchlistService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // The Watchlist tab's product definition: the user's ACTIVE, TRUSTWORTHY
+  // tracking list (currently watching, actively following, or planning to
+  // start) — not their whole collection, and not every row that happens to
+  // carry a WATCHING/CAUGHT_UP label. Queried directly off
+  // UserSeriesProgress (the authoritative status source) rather than
+  // WatchlistItem, so a series that moved on to PAUSED/DROPPED/COMPLETED
+  // correctly disappears from this tab without any data being deleted or
+  // any status being changed — it's still fully visible via GET /series
+  // (Library tab). A real-DB audit found 81/105 (77%) of stored WATCHING
+  // rows had no confirmed provider match — a frozen import-time default,
+  // not a live derived truth — so isWatchlistTabEligible additionally
+  // drops any WATCHING/CAUGHT_UP row without one; those series remain
+  // visible in Library and in the Needs Attention inbox instead. Sorted
+  // alphabetically by title, same plain-collation `asc` convention
+  // series-query-helpers.ts's list query already uses (predictable,
+  // browsable — the Home tab already owns dynamic/recency-based ordering).
+  // Grouping into Watching/Caught Up/Watchlist sections and computing
+  // per-section counts is left to the client — every item already carries
+  // its own userStatus, so no extra backend shape is needed for that.
   async list(userId: string): Promise<WatchlistItemDto[]> {
-    const items = await this.prisma.watchlistItem.findMany({
-      where: { userId },
-      orderBy: { addedAt: 'desc' },
-      include: { series: true },
+    const progress = await this.prisma.userSeriesProgress.findMany({
+      where: buildWatchlistTabWhere(userId),
+      orderBy: { series: { title: 'asc' } },
+      include: { series: { include: { externalIds: true } } },
     });
 
-    // WatchlistItem and UserSeriesProgress aren't directly related in the
-    // schema (both keyed by userId+seriesId independently) — fetched
-    // separately and merged so a series that moved on to WATCHING (etc.)
-    // after being watchlisted still reports its real current userStatus
-    // here, not a stale WATCHLIST.
-    const progressBySeriesId = await this.progressStatusBySeriesId(
-      userId,
-      items.map((i) => i.seriesId),
-    );
+    const eligible = progress.filter((p) => isWatchlistTabEligible({ userStatus: p.userStatus, externalIds: p.series.externalIds }));
 
-    return items.map((item) => ({
-      id: item.id,
-      addedAt: item.addedAt,
-      series: toSeriesSummary(item.series),
-      userStatus: progressBySeriesId.get(item.seriesId) ?? UserSeriesStatus.WATCHLIST,
-    }));
+    return eligible.map((p) => {
+      const hasConfirmedProviderMatch = hasConfirmedExternalId(p.series.externalIds);
+      const classification = classifySeriesForAttention({ title: p.series.title, hasConfirmedProviderMatch });
+
+      return {
+        id: p.id,
+        series: toSeriesSummary(p.series),
+        userStatus: p.userStatus,
+        attentionReasonCode: classification?.reasonCode ?? null,
+      };
+    });
   }
 
   async add(userId: string, seriesId: string): Promise<WatchlistItemDto> {
@@ -44,16 +63,21 @@ export class WatchlistService {
         where: { userId_seriesId: { userId, seriesId } },
         create: { userId, seriesId },
         update: {},
-        include: { series: true },
+        include: { series: { include: { externalIds: true } } },
       }),
       this.ensureWatchlistProgress(userId, seriesId),
     ]);
 
+    const classification = classifySeriesForAttention({
+      title: item.series.title,
+      hasConfirmedProviderMatch: hasConfirmedExternalId(item.series.externalIds),
+    });
+
     return {
       id: item.id,
-      addedAt: item.addedAt,
       series: toSeriesSummary(item.series),
       userStatus,
+      attentionReasonCode: classification?.reasonCode ?? null,
     };
   }
 
@@ -106,15 +130,5 @@ export class WatchlistService {
     }
 
     return existing.userStatus;
-  }
-
-  private async progressStatusBySeriesId(userId: string, seriesIds: string[]): Promise<Map<string, UserSeriesStatus>> {
-    if (seriesIds.length === 0) return new Map();
-
-    const rows = await this.prisma.userSeriesProgress.findMany({
-      where: { userId, seriesId: { in: seriesIds } },
-      select: { seriesId: true, userStatus: true },
-    });
-    return new Map(rows.map((r) => [r.seriesId, r.userStatus]));
   }
 }

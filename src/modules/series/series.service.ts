@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { UserSeriesStatus } from '@prisma/client';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
+import { hasConfirmedExternalId } from '../../common/has-confirmed-external-id';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SeriesDetailDto } from './dto/series-detail.dto';
 import { SeriesListPageDto } from './dto/series-list-page.dto';
@@ -64,7 +65,7 @@ export class SeriesService {
       watchInfoByEpisodeId,
     );
 
-    const hasAnyExternalId = !!series.externalIds && (series.externalIds.tmdbId || series.externalIds.traktId || series.externalIds.imdbId);
+    const hasAnyExternalId = hasConfirmedExternalId(series.externalIds);
 
     return {
       id: series.id,
