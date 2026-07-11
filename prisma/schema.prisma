@@ -62,6 +62,8 @@ model User {
   episodeRatings  EpisodeRating[]
   episodeEmotions EpisodeEmotion[]
   seriesRatings   SeriesRating[]
+  migrationHistory  MigrationHistory[]
+  providerDecisions ProviderIdentityDecision[]
 }
 
 model Series {
@@ -87,6 +89,8 @@ model Series {
   watchlistItems WatchlistItem[]
   externalIds    ExternalIds?
   ratings        SeriesRating[]
+  migrationHistory  MigrationHistory[]
+  providerDecisions ProviderIdentityDecision[]
 }
 
 model Season {
@@ -311,6 +315,130 @@ model ExternalIds {
   rawMetadata     Json?
 
   series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+}
+
+// The runtime-safe, per-user source of truth for "which provider identity
+// has a human explicitly confirmed for this series" — replaces
+// library-health/provider-confirmation-decisions.json as the LIVE decision
+// store (the JSON file's historical entries are one-time backfilled into
+// this table; see library-health/run-backfill-provider-decisions.ts). Both
+// the CLI pipeline and the in-app Migration Workbench read from this same
+// table now, so the two can never disagree about which titles have a
+// confirmed decision. @@unique([userId, seriesId]) mirrors
+// UserSeriesProgress's own per-user-per-series uniqueness — a decision is
+// scoped to the user who made it, never shared across users.
+model ProviderIdentityDecision {
+  id       String @id @default(uuid())
+  userId   String
+  seriesId String
+
+  // 'confirm' | 'skip' | 'defer' — mirrors
+  // library-health/provider-confirmation-decisions-logic.ts's
+  // ProviderConfirmationDecisionType exactly; kept as a plain String (not a
+  // Prisma enum) so the decision vocabulary stays defined in one place
+  // (that TS file), not duplicated into the schema.
+  decision   String
+  provider   String?
+  providerId String?
+
+  // Both mirror provider-confirmation-decisions.json's own optional
+  // per-title migration escape hatch — see migration-confirmation-logic.ts.
+  migrationIntent Boolean @default(false)
+  statusOverride  String?
+  notes           String?
+
+  // 'cli-decisions-file' for every row backfilled from the JSON file,
+  // 'app-confirmation' for a decision made through the in-app provider
+  // search flow — lets a reader tell which workflow produced a row without
+  // guessing from other fields.
+  source String
+
+  // The identity-similarity score (titleSimilarity, 0..1) at decision
+  // time — lets a future audit flag a decision as possibly stale if the
+  // local title changes enough that the original confidence no longer
+  // applies. Null for JSON-backfilled rows where this wasn't recorded.
+  confidence Float?
+
+  decidedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seriesId])
+  @@index([userId, decision])
+}
+
+// A durable, auditable record of exactly one Migration Workbench apply —
+// created inside the same transaction as the write it describes (see
+// library-health/run-provider-confirmation-for-decision.ts), so a
+// successful apply can never exist without a matching history row. Stores
+// enough before/after state to build a rollback plan without re-deriving
+// it from scratch later (see library-health/migration-rollback-logic.ts) —
+// "prefer storing a recovery plan... rather than trying to infer rollback
+// later." Complex before/after shapes are stored as Json (matching
+// Series.rawMetadata's existing convention) rather than fully normalized
+// into columns, keeping this table additive and simple.
+model MigrationHistory {
+  id           String   @id @default(uuid())
+  userId       String
+  seriesId     String
+  seriesTitle  String
+  appliedAt    DateTime @default(now())
+
+  // The MigrationOperatingClassification this apply was authorized under
+  // (AUTO_MIGRATE/AUTO_REFRESH/etc.) and the Workbench category it was
+  // surfaced in at the time — both plain strings, same reasoning as
+  // ProviderIdentityDecision.decision above.
+  classification String
+  sourceCategory String
+
+  // { provider, providerId, tmdbId } | null — null "before" means no prior
+  // confirmed match existed (first-time confirmation).
+  providerBefore Json?
+  providerAfter  Json
+
+  releaseStatusBefore String?
+  releaseStatusAfter  String?
+
+  userStatusBefore    String
+  userStatusAfter     String
+  nextEpisodeIdBefore String?
+  nextEpisodeIdAfter  String?
+
+  // Episode.id[] — every episode this migration inserted. Rollback may
+  // only ever remove episodes from this exact list (see rollback scope
+  // rules), never any other row.
+  episodesInsertedIds Json
+  // Episode.id[] — every episode whose metadata (title/overview/airDate/
+  // runtime) this migration backfilled in place. Never rolled back (no
+  // prior-value snapshot exists for these — see rollback documentation).
+  episodesUpdatedIds Json
+  // Episode.id[] — every watched-but-provider-unmatched episode this
+  // migration guaranteed to leave untouched. Recorded for the audit trail
+  // even though, by construction, these were never written to.
+  preservedOrphanEpisodeIds Json
+  // matchedWatchedCount at apply time — how many locally-watched episodes
+  // this migration's watch-history mapping covered.
+  watchedMappingCount Int
+
+  verificationPassed Boolean
+  // Failed verification check names/details, if any — [] when verificationPassed is true.
+  verificationDetail Json
+
+  // Set only once a rollback of this migration succeeds — null means
+  // "never rolled back" (the default, and the only state that permits a
+  // future rollback attempt at all).
+  rolledBackAt DateTime?
+  // Human-readable reason recorded at rollback time (mirrors migration
+  // apply's own reason-string convention throughout this codebase).
+  rollbackReason String?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@index([userId, seriesId])
+  @@index([userId, appliedAt])
 }
 
 // --- Import bookkeeping ---------------------------------------------------

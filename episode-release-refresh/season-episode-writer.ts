@@ -30,6 +30,11 @@ export interface CreateMissingSeasonsAndEpisodesResult {
   seasonsCreated: number[];
   episodesInserted: number;
   duplicatesSkipped: number;
+  // The real Episode.id of every row THIS call inserted — additive field
+  // (library-health's migration-history recording needs the exact ids to
+  // build a rollback plan; episode-release-refresh's own caller is free to
+  // keep ignoring it). Empty when episodesInserted is 0.
+  episodeIdsInserted: string[];
 }
 
 export async function createMissingSeasonsAndEpisodes(
@@ -87,10 +92,13 @@ export async function createMissingSeasonsAndEpisodes(
   // never an update, and never a thrown error that would leave the
   // surrounding Postgres transaction in an aborted state the way a caught
   // per-row create() error would. .count is the exact number of rows this
-  // statement actually inserted.
-  const insertResult = await tx.episode.createMany({ data: createData, skipDuplicates: true });
-  const episodesInserted = insertResult.count;
+  // statement actually inserted. createManyAndReturn (not createMany) so
+  // callers that need the real inserted ids (e.g. migration-history
+  // recording) can have them without a second round-trip query — same
+  // skipDuplicates semantics as the season insert above.
+  const insertedEpisodes = await tx.episode.createManyAndReturn({ data: createData, skipDuplicates: true, select: { id: true } });
+  const episodesInserted = insertedEpisodes.length;
   const duplicatesSkipped = createData.length - episodesInserted;
 
-  return { seasonsCreated, episodesInserted, duplicatesSkipped };
+  return { seasonsCreated, episodesInserted, duplicatesSkipped, episodeIdsInserted: insertedEpisodes.map((e) => e.id) };
 }

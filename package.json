@@ -43,7 +43,8 @@
     "library-health:pipeline": "ts-node library-health/run-provider-confirmation-pipeline.ts",
     "library-health:pipeline-apply": "ts-node library-health/run-provider-confirmation-pipeline.ts --apply-safe-confirmed",
     "library-health:backfill-tmdb-ids": "ts-node library-health/run-backfill-tmdb-external-ids.ts",
-    "library-health:backfill-tmdb-ids-apply": "ts-node library-health/run-backfill-tmdb-external-ids.ts --apply-tmdb-id-backfill"
+    "library-health:backfill-tmdb-ids-apply": "ts-node library-health/run-backfill-tmdb-external-ids.ts --apply-tmdb-id-backfill",
+    "library-health:backfill-provider-decisions": "ts-node library-health/run-backfill-provider-decisions.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
