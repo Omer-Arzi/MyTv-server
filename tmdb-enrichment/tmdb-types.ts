@@ -57,6 +57,10 @@ export interface TmdbEpisode {
   episode_number: number;
   season_number: number;
   still_path?: string | null;
+  // Minutes, per TMDb's season/episode payloads — genuinely nullable when
+  // TMDb hasn't recorded a runtime for that episode yet, not just an
+  // absent field.
+  runtime?: number | null;
 }
 
 export interface TmdbSeason {

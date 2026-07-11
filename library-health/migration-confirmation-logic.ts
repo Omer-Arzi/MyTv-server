@@ -63,10 +63,31 @@ export interface MigrationIntentInput {
   statusOverride?: UserSeriesStatus;
 }
 
+// Shared vocabulary for "why did the resolved userStatus end up this way,"
+// used by both an explicit migrationIntent decision (derived/human-override)
+// and the newer objective auto-policy (migration-policy-logic.ts's
+// resolveObjectiveMigrationStatus, which additionally distinguishes
+// preserved-because-not-objectively-derivable from protected-because-DROPPED-or-PAUSED).
+// Defined here (not in migration-policy-logic.ts, which already imports
+// isProtectedMigrationStatus from this file) to avoid a circular import —
+// buildMigrationApplyPlan itself never branches on this value, it only
+// ever passes it through to progressUpdate.statusSource for reporting.
+export type StatusSource = 'derived' | 'human-override' | 'preserved' | 'protected';
+
 export interface ClassifyMigrationConfirmationInput {
   baseClassification: DryRunClassification;
   baseReason: string;
   titleYearSanityPassed: boolean;
+  // Second hard floor, alongside titleYearSanityPassed — added during the
+  // stable-version migration policy work after an audit found this
+  // function never checked it at all. A real (non-zero) season shrinking
+  // or disappearing relative to the provider is a numbering-collision
+  // signal, not an orphan-tolerance question: migrationIntent existed to
+  // relax orphan-PATTERN restrictions, never to bless writing against a
+  // catalog shape that doesn't actually line up. Without this check, an
+  // explicit migrationIntent: true could previously have masked a genuine
+  // structural risk the non-migration pipeline would correctly block on.
+  realSeasonShrinkDetected: boolean;
   // The FULL, unfiltered orphan list — season-0 specials, split/merge
   // tails, and any real-season scattered orphans alike. Migration mode
   // preserves all of them regardless of pattern; only the non-migration
@@ -79,7 +100,7 @@ export interface ClassifyMigrationConfirmationInput {
 export interface ClassifyMigrationConfirmationResult {
   classification: ResolvedMigrationClassification;
   reason: string;
-  statusSource: 'derived' | 'human-override';
+  statusSource: StatusSource;
   // The userStatus a migration-mode apply would actually write — never
   // the mechanically-recomputed provider-count-derived value. Either the
   // human's explicit override, or the CURRENT local status carried
@@ -126,11 +147,24 @@ export function classifyMigrationConfirmation(input: ClassifyMigrationConfirmati
     };
   }
 
+  // Second hard floor — never bypassed by migrationIntent, mirroring the
+  // title/year sanity check immediately above. See the field comment on
+  // realSeasonShrinkDetected for why this was missing and why it matters.
+  if (input.realSeasonShrinkDetected) {
+    return {
+      classification: 'BLOCKED_DESTRUCTIVE_RISK',
+      reason: `migrationIntent is set, but a real (non-zero) season shrank or disappeared relative to the provider (${input.baseReason}) — numbering-collision risk, not an orphan-pattern question; migration mode refuses to proceed regardless of intent.`,
+      statusSource: 'derived',
+      resolvedUserStatus: input.currentUserStatus,
+      preservedOrphanEpisodes: [],
+    };
+  }
+
   const isProtected = isProtectedMigrationStatus(input.currentUserStatus);
   const hasOverride = input.migration.statusOverride !== undefined;
 
   let resolvedUserStatus: UserSeriesStatus;
-  let statusSource: 'derived' | 'human-override';
+  let statusSource: StatusSource;
   let statusNote: string;
 
   if (isProtected) {
@@ -202,7 +236,7 @@ export interface MigrationApplyPlan {
     // (potentially unreliable, given the mismatch) provider catalog.
     nextEpisodeId: string | null;
     lastWatchedAtUnchanged: true;
-    statusSource: 'derived' | 'human-override';
+    statusSource: StatusSource;
   };
 }
 
@@ -220,7 +254,7 @@ export function buildMigrationApplyPlan(input: {
   providerEpisodes: ProviderEpisodeForApply[];
   orphanedWatchedEpisodes: OrphanedWatchedEpisode[];
   resolvedUserStatus: UserSeriesStatus;
-  statusSource: 'derived' | 'human-override';
+  statusSource: StatusSource;
   currentNextEpisodeId: string | null;
 }): MigrationApplyPlan {
   const episodeUpdates = planEpisodeUpdates(input.localEpisodes, input.providerEpisodes).filter((u) => Object.keys(u.changes).length > 0);

@@ -7,6 +7,8 @@ import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { RefreshClassification, SeriesSkipReason } from './refresh-logic';
+import { classifyRefreshOperatingOutcome } from './refresh-operating-outcome';
+import { MigrationOperatingClassification } from '../src/common/migration-operating-classification';
 
 export interface SkippedSeriesEntry {
   seriesId: string;
@@ -35,6 +37,15 @@ export interface RefreshedSeriesEntry {
   proposedUserStatus: UserSeriesStatus | null;
   userStatusWouldChangeToWatching: boolean;
   classification: RefreshClassification;
+  bulkInsertReason: string | null;
+  seasonZeroReason: string | null;
+  // Additive, from the stable-version migration policy work — see
+  // refresh-operating-outcome.ts. routingNote is non-null only for
+  // SUSPICIOUS_BULK_INSERT: a catalog-completeness gap, not a
+  // watch-history risk, that belongs in library-health's catalog
+  // reconciliation pipeline rather than waiting on ongoing refresh.
+  operatingClassification: MigrationOperatingClassification;
+  routingNote: string | null;
   warnings: string[];
 }
 
@@ -54,11 +65,13 @@ export interface RefreshReport {
     FUTURE_ONLY: number;
     NEEDS_MANUAL_REVIEW: number;
     RISKY_DO_NOT_APPLY: number;
+    SUSPICIOUS_BULK_INSERT: number;
+    SEASON_ZERO_PROPOSED: number;
     PROVIDER_ERROR: number;
   };
 }
 
-const ALL_SKIP_REASONS: SeriesSkipReason[] = ['user-status-not-tracked', 'no-tmdb-id', 'risk-list', 'release-status-finished'];
+const ALL_SKIP_REASONS: SeriesSkipReason[] = ['user-status-not-tracked', 'no-tmdb-id', 'risk-list'];
 
 export function buildRefreshReport(input: {
   generatedAt: Date;
@@ -76,6 +89,8 @@ export function buildRefreshReport(input: {
     FUTURE_ONLY: 0,
     NEEDS_MANUAL_REVIEW: 0,
     RISKY_DO_NOT_APPLY: 0,
+    SUSPICIOUS_BULK_INSERT: 0,
+    SEASON_ZERO_PROPOSED: 0,
     PROVIDER_ERROR: 0,
   };
   for (const entry of input.refreshedSeries) summary[entry.classification] += 1;
@@ -100,6 +115,8 @@ const CLASSIFICATION_LABELS: Record<RefreshClassification, string> = {
   FUTURE_ONLY: 'Future episodes only',
   NEEDS_MANUAL_REVIEW: 'Needs manual review',
   RISKY_DO_NOT_APPLY: 'Risky — do not apply',
+  SUSPICIOUS_BULK_INSERT: 'Suspicious bulk insert — needs manual review',
+  SEASON_ZERO_PROPOSED: 'Season 0 proposed — blocked, needs manual review',
   PROVIDER_ERROR: 'Provider fetch error',
 };
 
@@ -141,6 +158,8 @@ export function buildMarkdownReport(report: RefreshReport): string {
   const classificationOrder: RefreshClassification[] = [
     'RISKY_DO_NOT_APPLY',
     'NEEDS_MANUAL_REVIEW',
+    'SEASON_ZERO_PROPOSED',
+    'SUSPICIOUS_BULK_INSERT',
     'PROVIDER_ERROR',
     'NEW_RELEASE_AVAILABLE',
     'FUTURE_ONLY',
@@ -171,6 +190,15 @@ export function buildMarkdownReport(report: RefreshReport): string {
       );
       if (entry.userStatusWouldChangeToWatching) {
         lines.push('- userStatus would move **CAUGHT_UP → WATCHING** — a new released episode is now available.');
+      }
+      if (entry.seasonZeroReason) {
+        lines.push(`- **Season-0 guard triggered:** ${entry.seasonZeroReason}`);
+      }
+      if (entry.bulkInsertReason) {
+        lines.push(`- **Bulk-insert guard triggered:** ${entry.bulkInsertReason}`);
+      }
+      if (entry.routingNote) {
+        lines.push(`- **Routing note:** ${entry.routingNote}`);
       }
       if (entry.warnings.length > 0) {
         lines.push('- Warnings:');

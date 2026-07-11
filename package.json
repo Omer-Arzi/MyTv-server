@@ -29,6 +29,8 @@
     "tmdb:enrichment-apply": "ts-node tmdb-enrichment/run-apply-plan.ts",
     "next-episode:backfill": "ts-node next-episode-backfill/run-backfill.ts",
     "episode-refresh:dry-run": "ts-node episode-release-refresh/run-refresh.ts",
+    "episode-refresh:apply-dry-run": "ts-node episode-release-refresh/run-apply-refresh.ts",
+    "episode-refresh:apply": "ts-node episode-release-refresh/run-apply-refresh.ts --apply-episode-insert",
     "library-health:report": "ts-node library-health/run-health-report.ts",
     "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts",
     "library-health:missing-provider-candidates": "ts-node library-health/run-missing-provider-candidates.ts",

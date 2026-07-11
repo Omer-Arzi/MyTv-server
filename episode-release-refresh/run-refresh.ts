@@ -23,6 +23,7 @@ import {
   ProviderEpisodeInput,
 } from './refresh-logic';
 import { buildMarkdownReport, buildRefreshReport, RefreshedSeriesEntry, SkippedSeriesEntry, writeRefreshReports } from './reports';
+import { classifyRefreshOperatingOutcome } from './refresh-operating-outcome';
 
 const DEFAULT_OUT_DIR = path.join(__dirname, 'output');
 
@@ -142,7 +143,7 @@ async function fetchProviderEpisodes(tmdb: TmdbClient, tmdbId: string, localSeas
           overview: ep.overview ?? null,
           airDate: ep.air_date ? new Date(ep.air_date) : null,
           imageUrl: tmdbStillUrl(ep.still_path),
-          runtimeMinutes: null, // TMDb's episode object carries runtime inconsistently across seasons payloads; not prioritized per the task, left null rather than guessed.
+          runtimeMinutes: ep.runtime ?? null,
         });
       }
     }
@@ -177,7 +178,6 @@ async function main() {
       userStatus: series.userStatus,
       tmdbId: series.tmdbId,
       title: series.title,
-      releaseStatus: series.releaseStatus,
     });
     if (!eligibility.eligible) {
       skippedSeries.push({ seriesId: series.id, seriesTitle: series.title, userStatus: series.userStatus, reason: eligibility.reason! });
@@ -206,6 +206,8 @@ async function main() {
         currentNextEpisodeId: series.nextEpisodeId,
       });
 
+      const operatingOutcome = classifyRefreshOperatingOutcome(comparison.classification);
+
       refreshedSeries.push({
         seriesId: series.id,
         seriesTitle: series.title,
@@ -226,12 +228,17 @@ async function main() {
         proposedUserStatus: comparison.proposedUserStatus,
         userStatusWouldChangeToWatching: comparison.userStatusWouldChangeToWatching,
         classification: comparison.classification,
+        bulkInsertReason: comparison.bulkInsertReason,
+        seasonZeroReason: comparison.seasonZeroReason,
+        operatingClassification: operatingOutcome.operatingClassification,
+        routingNote: operatingOutcome.routingNote,
         warnings: comparison.warnings,
       });
 
       console.log(`  [${comparison.classification}] ${series.title}`);
     } catch (err) {
       const message = err instanceof TmdbRequestError ? err.message : (err as Error).message;
+      const operatingOutcome = classifyRefreshOperatingOutcome('PROVIDER_ERROR');
       refreshedSeries.push({
         seriesId: series.id,
         seriesTitle: series.title,
@@ -252,6 +259,10 @@ async function main() {
         proposedUserStatus: null,
         userStatusWouldChangeToWatching: false,
         classification: 'PROVIDER_ERROR',
+        bulkInsertReason: null,
+        seasonZeroReason: null,
+        operatingClassification: operatingOutcome.operatingClassification,
+        routingNote: operatingOutcome.routingNote,
         warnings: [`TMDb fetch failed: ${message}`],
       });
       console.log(`  [PROVIDER_ERROR] ${series.title} — ${message}`);

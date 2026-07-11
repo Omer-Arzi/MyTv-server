@@ -1,0 +1,76 @@
+[
+  {
+    "title": "One-Punch Man",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 63926,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 49 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Checkout",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 97177,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 100 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "The Big Bang Theory",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 1418,
+    "notes": "Human-confirmed match: exact title, correct provider identity (tmdb/1418). Finalized for this library \u2014 the 1-episode count gap is accepted as-is; identity is not in question."
+  },
+  {
+    "title": "Doctor Who (2005)",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 57243,
+    "migrationIntent": true,
+    "notes": "Migration mode: exact title/year, every real season matches TMDb exactly, only 1 benign season-0 orphan preserved untouched. No statusOverride needed \u2014 current CAUGHT_UP carried forward unchanged rather than recomputed. From provider-confirmation Bucket B deep-inspection / cleanup-plan review."
+  },
+  {
+    "title": "Game of Thrones",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 1399,
+    "migrationIntent": true,
+    "statusOverride": "COMPLETED",
+    "notes": "Migration mode (MIGRATION_SMALL_ORPHAN_READY): identity confirmed, every real season matches TMDb exactly, only 1 benign season-0 orphan preserved untouched. statusOverride explicit (COMPLETED) per user watch-state note (ended, watched everything) \u2014 verified fresh: TMDb status=Ended. From provider-confirmation cleanup-plan review."
+  },
+  {
+    "title": "House",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 1408,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 86 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Dr. STONE",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 86031,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 24 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Monster Allergy",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 17506,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 19 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Devil May Cry (2025)",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 235930,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 8 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Black Mirror",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 42009,
+    "migrationIntent": true,
+    "notes": "Migration mode (MIGRATION_SMALL_ORPHAN_READY): identity confirmed, every real season matches TMDb exactly, only 1 benign season-0 orphan preserved untouched. Deliberately NO statusOverride: user watch-state note says only ~3 seasons watched out of everything released, confirmed by data (local 19 episodes vs. provider's full 33-episode/7-season catalog) \u2014 current WATCHING status carried forward unchanged is the correct, accurate state, not COMPLETED. From provider-confirmation cleanup-plan review."
+  }
+]

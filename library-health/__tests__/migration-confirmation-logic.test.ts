@@ -32,6 +32,7 @@ describe('classifyMigrationConfirmation — reachability gate (no migration tier
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'season 21 is missing entirely from the provider response',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: Array.from({ length: 472 }, (_, i) => orphan(2 + (i % 20), i)),
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       migration: { migrationIntent: false },
@@ -46,6 +47,7 @@ describe('classifyMigrationConfirmation — reachability gate (no migration tier
       baseClassification: 'SAFE_TO_APPLY_LATER',
       baseReason: 'clean match',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [],
       currentUserStatus: UserSeriesStatus.WATCHING,
       migration: { migrationIntent: false },
@@ -60,6 +62,7 @@ describe('classifyMigrationConfirmation — reachability gate (no migration tier
         baseClassification: base,
         baseReason: 'x',
         titleYearSanityPassed: false, // even with sanity failing
+        realSeasonShrinkDetected: false,
         orphanedWatchedEpisodes: [orphan(1, 1)],
         currentUserStatus: UserSeriesStatus.WATCHING,
         migration: { migrationIntent: false },
@@ -75,6 +78,7 @@ describe('classifyMigrationConfirmation — BLOCKED_DESTRUCTIVE_RISK (identity n
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'candidate title does not resemble local title',
       titleYearSanityPassed: false,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [],
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED },
@@ -82,6 +86,28 @@ describe('classifyMigrationConfirmation — BLOCKED_DESTRUCTIVE_RISK (identity n
     expect(result.classification).toBe('BLOCKED_DESTRUCTIVE_RISK');
     expect(result.preservedOrphanEpisodes).toEqual([]);
     expect(result.resolvedUserStatus).toBe(UserSeriesStatus.CAUGHT_UP); // untouched
+  });
+
+  // Regression test for a gap found during the stable-version migration
+  // policy audit: this function previously had no realSeasonShrinkDetected
+  // input at all, meaning an explicit migrationIntent: true could
+  // previously have masked a genuine numbering-collision risk that the
+  // non-migration pipeline correctly blocks on. Fixed as a second hard
+  // floor, alongside title/year sanity — never bypassed by intent or an
+  // explicit statusOverride.
+  it('refuses migration when a real season shrink is detected, even with migrationIntent and an explicit statusOverride', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 3 shrank: 24 local episode(s) vs. 23 from the provider',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [orphan(3, 0)],
+      currentUserStatus: UserSeriesStatus.WATCHING,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED },
+    });
+    expect(result.classification).toBe('BLOCKED_DESTRUCTIVE_RISK');
+    expect(result.preservedOrphanEpisodes).toEqual([]);
+    expect(result.resolvedUserStatus).toBe(UserSeriesStatus.WATCHING); // untouched, override refused
   });
 });
 
@@ -91,6 +117,7 @@ describe('classifyMigrationConfirmation — Doctor Who style small season-0 orph
       baseClassification: 'SAFE_WITH_LOCAL_SPECIAL_ORPHAN',
       baseReason: 'benign season-0 orphan',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [orphan(0, 0)],
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       migration: { migrationIntent: true },
@@ -109,6 +136,7 @@ describe('classifyMigrationConfirmation — The Flash style small real-season or
       baseClassification: 'BLOCKED_RISK', // this is exactly what the non-migration pipeline returns for The Flash
       baseReason: 'season 3 shrank: 24 local episode(s) vs. 23 from the provider',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: orphans,
       currentUserStatus: UserSeriesStatus.WATCHING,
       migration: { migrationIntent: true },
@@ -127,6 +155,7 @@ describe('classifyMigrationConfirmation — Naruto Shippuden style large absolut
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'season 21 is missing entirely from the provider response; season 22 is missing entirely...',
       titleYearSanityPassed: true, // seasons 1-9 matched TMDb exactly, confirming identity
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: orphans,
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       migration: { migrationIntent: true, statusOverride: UserSeriesStatus.CAUGHT_UP },
@@ -144,6 +173,7 @@ describe('classifyMigrationConfirmation — Naruto Shippuden style large absolut
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'massive structural mismatch',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: orphans,
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       migration: { migrationIntent: true },
@@ -160,6 +190,7 @@ describe('classifyMigrationConfirmation — no status override unless explicitly
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'x',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [orphan(1, 1)],
       currentUserStatus: UserSeriesStatus.WATCHING,
       migration: { migrationIntent: true },
@@ -173,6 +204,7 @@ describe('classifyMigrationConfirmation — no status override unless explicitly
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'x',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [orphan(1, 1)],
       currentUserStatus: UserSeriesStatus.WATCHING,
       migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED },
@@ -188,6 +220,7 @@ describe('classifyMigrationConfirmation — DROPPED/PAUSED protection remains in
       baseClassification: 'BLOCKED_RISK',
       baseReason: 'x',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [orphan(1, 1)],
       currentUserStatus: protectedStatus,
       migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED },
@@ -204,6 +237,7 @@ describe('classifyMigrationConfirmation — DROPPED/PAUSED protection remains in
       baseClassification: 'SAFE_TO_APPLY_LATER',
       baseReason: 'x',
       titleYearSanityPassed: true,
+      realSeasonShrinkDetected: false,
       orphanedWatchedEpisodes: [],
       currentUserStatus: UserSeriesStatus.DROPPED,
       migration: { migrationIntent: true, statusOverride: UserSeriesStatus.WATCHING },

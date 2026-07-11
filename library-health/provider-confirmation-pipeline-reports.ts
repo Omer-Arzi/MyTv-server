@@ -7,8 +7,50 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { DryRunClassification, SupportedProvider } from './provider-confirmation-decisions-logic';
-import { MigrationClassification } from './migration-confirmation-logic';
+import { MigrationClassification, StatusSource } from './migration-confirmation-logic';
 import { OrphanedWatchedEpisode } from './season-zero-orphan-logic';
+import { IdentityConfidenceBand } from './migration-policy-logic';
+import { MigrationOperatingClassification } from '../src/common/migration-operating-classification';
+
+// Phase 7 verification, run automatically for every real apply (see
+// run-provider-confirmation-pipeline.ts) — compact pass/fail summary in the
+// report; the full per-check detail is logged to the console at apply time
+// rather than duplicated into the JSON report on every run.
+export interface AppliedVerificationResult {
+  passed: boolean;
+  failedChecks: string[];
+}
+
+// Additive fields from the stable-version migration policy work — present
+// on every entry (not just migration-mode ones) so a report reader never
+// has to know two separate vocabularies. autoMigrationEligible/identityBand
+// are computed for EVERY confirmed decision regardless of migrationIntent;
+// catalog-reconciliation counts (seasonsCreated/episodesCreated) are the
+// NEW missing-season/episode creation capability (see
+// migration-catalog-plan-logic.ts) applied uniformly to every applied/safe
+// title, not just migration-mode ones.
+export interface OperatingOutcomeFields {
+  operatingClassification: MigrationOperatingClassification;
+  identityBand: IdentityConfidenceBand;
+  autoMigrationEligible: boolean;
+  autoMigrationEligibilityReason: string;
+}
+
+export interface CatalogReconciliationFields {
+  seasonsCreated: number[];
+  episodesCreated: number;
+  matchedWatchedCount: number;
+  matchedTotalCount: number;
+}
+
+// Present on both applied and dry-run-safe entries so a batch manifest (see
+// batch-manifest-logic.ts) can read "current vs proposed" the same way
+// regardless of whether writes actually happened yet. For dry-run entries
+// these are previews (what WOULD change), never something already written.
+export interface ProgressChangeFields {
+  userStatus: { from: string; to: string; changed: boolean };
+  nextEpisodeId: { from: string | null; to: string | null; changed: boolean };
+}
 
 // migrationIntent/statusSource/migrationClassification are additive on
 // every entry type below: migrationIntent is false and
@@ -17,7 +59,7 @@ import { OrphanedWatchedEpisode } from './season-zero-orphan-logic';
 // classifyProviderConfirmationDryRun result, never overwritten by a
 // migration outcome, so a report consumer that predates migration mode
 // still sees exactly what it always saw. See migration-confirmation-logic.ts.
-export interface PipelineAppliedSeriesEntry {
+export interface PipelineAppliedSeriesEntry extends OperatingOutcomeFields, CatalogReconciliationFields, ProgressChangeFields {
   title: string;
   seriesId: string;
   provider: SupportedProvider;
@@ -27,17 +69,22 @@ export interface PipelineAppliedSeriesEntry {
   posterUpdated: boolean;
   preservedOrphanEpisodeCount: number;
   preservedOrphanEpisodes: OrphanedWatchedEpisode[];
-  userStatus: { from: string; to: string; changed: boolean };
   migrationIntent: boolean;
-  statusSource: 'derived' | 'human-override';
+  statusSource: StatusSource;
   migrationClassification: MigrationClassification | null;
+  // True when this title reached the safe-to-apply branch via the new
+  // objective auto-policy rather than an already-safe base classification
+  // or an explicit migrationIntent — i.e. it would have required a manual
+  // migrationIntent flag before this task.
+  viaAutoMigrationPolicy: boolean;
+  verification: AppliedVerificationResult;
 }
 
 // Safe classification, but nothing was written because the pipeline ran in
 // dry-run mode (the default) — the would-be plan is summarized the same
 // way an applied entry would be, minus anything that only exists once a
 // transaction actually runs.
-export interface PipelineDryRunSafeEntry {
+export interface PipelineDryRunSafeEntry extends OperatingOutcomeFields, CatalogReconciliationFields, ProgressChangeFields {
   title: string;
   seriesId: string;
   provider: SupportedProvider;
@@ -48,8 +95,9 @@ export interface PipelineDryRunSafeEntry {
   preservedOrphanEpisodeCount: number;
   preservedOrphanEpisodes: OrphanedWatchedEpisode[];
   migrationIntent: boolean;
-  statusSource: 'derived' | 'human-override';
+  statusSource: StatusSource;
   migrationClassification: MigrationClassification | null;
+  viaAutoMigrationPolicy: boolean;
 }
 
 // Already has this exact provider/providerId in ExternalIds AND the plan
@@ -74,6 +122,11 @@ export interface PipelineSkippedSeriesEntry {
   reason: string;
   migrationIntent: boolean;
   migrationClassification: MigrationClassification | null;
+  // Null for skips that happen before any classification is possible at
+  // all (no local series found, no provider/providerId set) — those are
+  // REVIEW_IDENTITY by construction but not worth a full computed object
+  // for a case with no fetched candidate to reason about.
+  operatingClassification: MigrationOperatingClassification | null;
 }
 
 export interface PipelineErrorEntry {
@@ -103,6 +156,15 @@ export interface ProviderConfirmationPipelineReport {
     errorCount: number;
     manualReviewCandidateCount: number;
     preservedOrphanEpisodeCount: number;
+    // New in the stable-version migration policy work.
+    viaAutoMigrationPolicyCount: number;
+    seasonsCreatedCount: number;
+    episodesCreatedCount: number;
+    operatingClassificationCounts: Record<MigrationOperatingClassification, number>;
+    // Phase 7 verification, run automatically for every real apply. A
+    // non-zero count here means a write happened that didn't match its own
+    // expectation — investigate before applying any further batches.
+    verificationFailureCount: number;
   };
   appliedSeries: PipelineAppliedSeriesEntry[];
   dryRunSafeSeries: PipelineDryRunSafeEntry[];
@@ -139,6 +201,26 @@ export function buildProviderConfirmationPipelineReport(input: {
 }): ProviderConfirmationPipelineReport {
   const preservedOrphanEpisodeCount =
     input.appliedSeries.reduce((sum, s) => sum + s.preservedOrphanEpisodeCount, 0) + input.dryRunSafeSeries.reduce((sum, s) => sum + s.preservedOrphanEpisodeCount, 0);
+  const viaAutoMigrationPolicyCount =
+    input.appliedSeries.filter((s) => s.viaAutoMigrationPolicy).length + input.dryRunSafeSeries.filter((s) => s.viaAutoMigrationPolicy).length;
+  const seasonsCreatedCount = input.appliedSeries.reduce((sum, s) => sum + s.seasonsCreated.length, 0);
+  const episodesCreatedCount = input.appliedSeries.reduce((sum, s) => sum + s.episodesCreated, 0);
+  const verificationFailureCount = input.appliedSeries.filter((s) => !s.verification.passed).length;
+
+  const operatingClassificationCounts: Record<MigrationOperatingClassification, number> = {
+    AUTO_MIGRATE: 0,
+    AUTO_REFRESH: 0,
+    REVIEW_IDENTITY: 0,
+    REVIEW_ALIGNMENT: 0,
+    PROVIDER_ERROR: 0,
+  };
+  for (const s of [...input.appliedSeries, ...input.dryRunSafeSeries]) {
+    operatingClassificationCounts[s.operatingClassification] += 1;
+  }
+  for (const s of [...input.skippedBlockedSeries, ...input.skippedDeferredSeries]) {
+    if (s.operatingClassification) operatingClassificationCounts[s.operatingClassification] += 1;
+  }
+  operatingClassificationCounts.PROVIDER_ERROR += input.errors.length;
 
   return {
     generatedAt: input.generatedAt.toISOString(),
@@ -156,6 +238,11 @@ export function buildProviderConfirmationPipelineReport(input: {
       errorCount: input.errors.length,
       manualReviewCandidateCount: input.nextManualReviewCandidates.length,
       preservedOrphanEpisodeCount,
+      viaAutoMigrationPolicyCount,
+      seasonsCreatedCount,
+      episodesCreatedCount,
+      operatingClassificationCounts,
+      verificationFailureCount,
     },
     appliedSeries: input.appliedSeries,
     dryRunSafeSeries: input.dryRunSafeSeries,
@@ -202,6 +289,25 @@ export function buildProviderConfirmationPipelineMarkdownReport(report: Provider
   lines.push(`| Errors | ${report.summary.errorCount} |`);
   lines.push(`| Next manual-review candidates | ${report.summary.manualReviewCandidateCount} |`);
   lines.push(`| Preserved orphan episodes (total) | ${report.summary.preservedOrphanEpisodeCount} |`);
+  lines.push(`| Via new auto-migration policy (no migrationIntent needed) | ${report.summary.viaAutoMigrationPolicyCount} |`);
+  lines.push(`| Seasons created | ${report.summary.seasonsCreatedCount} |`);
+  lines.push(`| Episodes created (catalog reconciliation) | ${report.summary.episodesCreatedCount} |`);
+  lines.push(`| Post-apply verification failures | ${report.summary.verificationFailureCount} |`);
+  lines.push('');
+
+  if (report.summary.verificationFailureCount > 0) {
+    lines.push('## ⚠ Verification failures — investigate before applying further batches');
+    lines.push('');
+    for (const s of report.appliedSeries.filter((s) => !s.verification.passed)) {
+      lines.push(`- **${s.title}** (\`${s.seriesId}\`): ${s.verification.failedChecks.join(', ')}`);
+    }
+    lines.push('');
+  }
+  lines.push('| Operating classification | Count |');
+  lines.push('| --- | --- |');
+  for (const [classification, count] of Object.entries(report.summary.operatingClassificationCounts)) {
+    lines.push(`| ${classification} | ${count} |`);
+  }
   lines.push('');
 
   if (report.appliedSeries.length > 0) {
@@ -209,10 +315,12 @@ export function buildProviderConfirmationPipelineMarkdownReport(report: Provider
     lines.push('');
     for (const s of report.appliedSeries) {
       lines.push(
-        `- **${s.title}** (\`${s.provider}:${s.providerId}\`, \`${s.classification}\`) — ${s.episodeUpdateCount} episode field update(s)` +
+        `- **${s.title}** (\`${s.provider}:${s.providerId}\`, \`${s.classification}\` → \`${s.operatingClassification}\`) — ${s.episodeUpdateCount} episode field update(s)` +
           `${s.posterUpdated ? ', poster updated' : ''}${s.userStatus.changed ? `, userStatus ${s.userStatus.from} → ${s.userStatus.to}` : ''}` +
+          `${s.seasonsCreated.length > 0 ? `, ${s.seasonsCreated.length} season(s) created` : ''}${s.episodesCreated > 0 ? `, ${s.episodesCreated} episode(s) created` : ''}` +
           `${s.preservedOrphanEpisodeCount > 0 ? ` — preserved orphan(s): ${fmtOrphans(s.preservedOrphanEpisodes)}` : ''}` +
           fmtMigration(s) +
+          `${s.viaAutoMigrationPolicy ? ` · **auto-migration policy** (identity: ${s.identityBand}, status source: ${s.statusSource})` : ''}` +
           `${s.migrationIntent ? ` (status source: ${s.statusSource})` : ''}`,
       );
     }
@@ -224,10 +332,12 @@ export function buildProviderConfirmationPipelineMarkdownReport(report: Provider
     lines.push('');
     for (const s of report.dryRunSafeSeries) {
       lines.push(
-        `- **${s.title}** (\`${s.provider}:${s.providerId}\`, \`${s.classification}\`) — would update ${s.episodeUpdateCount} episode field(s)` +
-          `${s.wouldUpdatePoster ? ', would update poster' : ''}` +
+        `- **${s.title}** (\`${s.provider}:${s.providerId}\`, \`${s.classification}\` → \`${s.operatingClassification}\`) — would update ${s.episodeUpdateCount} episode field(s)` +
+          `${s.wouldUpdatePoster ? ', would update poster' : ''}${s.userStatus.changed ? `, userStatus would change ${s.userStatus.from} → ${s.userStatus.to}` : ''}` +
+          `${s.seasonsCreated.length > 0 ? `, ${s.seasonsCreated.length} season(s) would be created` : ''}${s.episodesCreated > 0 ? `, ${s.episodesCreated} episode(s) would be created` : ''}` +
           `${s.preservedOrphanEpisodeCount > 0 ? ` — would preserve orphan(s): ${fmtOrphans(s.preservedOrphanEpisodes)}` : ''}` +
           fmtMigration(s) +
+          `${s.viaAutoMigrationPolicy ? ` · **auto-migration policy** (identity: ${s.identityBand}, status source: ${s.statusSource})` : ''}` +
           `${s.migrationIntent ? ` (status source: ${s.statusSource})` : ''}`,
       );
     }

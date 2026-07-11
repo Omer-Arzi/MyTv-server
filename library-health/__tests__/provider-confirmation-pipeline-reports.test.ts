@@ -4,10 +4,49 @@ import path from 'path';
 import {
   buildProviderConfirmationPipelineMarkdownReport,
   buildProviderConfirmationPipelineReport,
+  OperatingOutcomeFields,
+  CatalogReconciliationFields,
+  ProgressChangeFields,
+  AppliedVerificationResult,
   writeProviderConfirmationPipelineReports,
 } from '../provider-confirmation-pipeline-reports';
 
 const generatedAt = new Date('2026-07-09T12:00:00.000Z');
+
+// Sensible defaults for the stable-version migration policy fields, so
+// existing fixtures below stay focused on what each test actually cares
+// about instead of repeating this boilerplate everywhere.
+function operatingFields(overrides: Partial<OperatingOutcomeFields> = {}): OperatingOutcomeFields {
+  return {
+    operatingClassification: 'AUTO_REFRESH',
+    identityBand: 'HIGH_CONFIDENCE',
+    autoMigrationEligible: false,
+    autoMigrationEligibilityReason: 'not evaluated for this fixture',
+    ...overrides,
+  };
+}
+
+function catalogFields(overrides: Partial<CatalogReconciliationFields> = {}): CatalogReconciliationFields {
+  return {
+    seasonsCreated: [],
+    episodesCreated: 0,
+    matchedWatchedCount: 0,
+    matchedTotalCount: 0,
+    ...overrides,
+  };
+}
+
+function progressFields(overrides: Partial<ProgressChangeFields> = {}): ProgressChangeFields {
+  return {
+    userStatus: { from: 'WATCHING', to: 'WATCHING', changed: false },
+    nextEpisodeId: { from: null, to: null, changed: false },
+    ...overrides,
+  };
+}
+
+function passingVerification(overrides: Partial<AppliedVerificationResult> = {}): AppliedVerificationResult {
+  return { passed: true, failedChecks: [], ...overrides };
+}
 
 function baseInput() {
   return {
@@ -31,11 +70,21 @@ describe('buildProviderConfirmationPipelineReport', () => {
       ...baseInput(),
       mode: 'apply',
       appliedSeries: [
-        { title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, posterUpdated: true, preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], userStatus: { from: 'WATCHING', to: 'COMPLETED', changed: true }, migrationIntent: false, statusSource: 'derived', migrationClassification: null },
-        { title: 'The Office (US)', seriesId: 's2', provider: 'tmdb', providerId: '2316', classification: 'SAFE_WITH_SPLIT_EPISODE_TAIL', episodeUpdateCount: 14, posterUpdated: false, preservedOrphanEpisodeCount: 5, preservedOrphanEpisodes: [{ id: 'a', seasonNumber: 4, episodeNumber: 15 }], userStatus: { from: 'WATCHING', to: 'WATCHING', changed: false }, migrationIntent: false, statusSource: 'derived', migrationClassification: null },
+        {
+          title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, posterUpdated: true,
+          preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'derived',
+          migrationClassification: null, viaAutoMigrationPolicy: false, ...operatingFields({ operatingClassification: 'AUTO_MIGRATE' }), ...catalogFields(),
+          ...progressFields({ userStatus: { from: 'WATCHING', to: 'COMPLETED', changed: true } }), verification: passingVerification(),
+        },
+        {
+          title: 'The Office (US)', seriesId: 's2', provider: 'tmdb', providerId: '2316', classification: 'SAFE_WITH_SPLIT_EPISODE_TAIL', episodeUpdateCount: 14, posterUpdated: false,
+          preservedOrphanEpisodeCount: 5, preservedOrphanEpisodes: [{ id: 'a', seasonNumber: 4, episodeNumber: 15 }],
+          migrationIntent: false, statusSource: 'derived', migrationClassification: null, viaAutoMigrationPolicy: false,
+          ...operatingFields({ operatingClassification: 'AUTO_MIGRATE' }), ...catalogFields({ seasonsCreated: [5], episodesCreated: 3 }), ...progressFields(), verification: passingVerification(),
+        },
       ],
-      skippedBlockedSeries: [{ title: 'The Flash (2014)', seriesId: 's3', classification: 'BLOCKED_RISK', reason: 'real mid-season gap', migrationIntent: false, migrationClassification: null }],
-      skippedDeferredSeries: [{ title: 'Naruto Shippuden', seriesId: null, classification: null, reason: 'decision is "defer"', migrationIntent: false, migrationClassification: null }],
+      skippedBlockedSeries: [{ title: 'The Flash (2014)', seriesId: 's3', classification: 'BLOCKED_RISK', reason: 'real mid-season gap', migrationIntent: false, migrationClassification: null, operatingClassification: 'REVIEW_ALIGNMENT' }],
+      skippedDeferredSeries: [{ title: 'Naruto Shippuden', seriesId: null, classification: null, reason: 'decision is "defer"', migrationIntent: false, migrationClassification: null, operatingClassification: 'REVIEW_IDENTITY' }],
       errors: [{ title: 'Some Show', message: 'provider fetch failed: 500' }],
       nextManualReviewCandidates: [{ title: 'Brand New Show', seriesId: 's4', reason: 'no decisions-file entry at all' }],
     });
@@ -49,6 +98,17 @@ describe('buildProviderConfirmationPipelineReport', () => {
       errorCount: 1,
       manualReviewCandidateCount: 1,
       preservedOrphanEpisodeCount: 5,
+      viaAutoMigrationPolicyCount: 0,
+      seasonsCreatedCount: 1,
+      episodesCreatedCount: 3,
+      operatingClassificationCounts: {
+        AUTO_MIGRATE: 2,
+        AUTO_REFRESH: 0,
+        REVIEW_IDENTITY: 1,
+        REVIEW_ALIGNMENT: 1,
+        PROVIDER_ERROR: 1, // the one error counts here too
+      },
+      verificationFailureCount: 0,
     });
     expect(report.writesToAppTables).toBe(true);
     expect(report.writesToProviderData).toBe(false);
@@ -58,7 +118,13 @@ describe('buildProviderConfirmationPipelineReport', () => {
     const report = buildProviderConfirmationPipelineReport({
       ...baseInput(),
       mode: 'dry-run',
-      dryRunSafeSeries: [{ title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, wouldUpdatePoster: true, preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'derived', migrationClassification: null }],
+      dryRunSafeSeries: [
+        {
+          title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, wouldUpdatePoster: true,
+          preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'derived', migrationClassification: null, viaAutoMigrationPolicy: false,
+          ...operatingFields(), ...catalogFields(), ...progressFields(),
+        },
+      ],
     });
     expect(report.writesToAppTables).toBe(false);
     expect(report.summary.dryRunSafeCount).toBe(1);
@@ -82,6 +148,49 @@ describe('buildProviderConfirmationPipelineReport', () => {
     expect(report.summary.dryRunSafeCount).toBe(0);
     expect(report.summary.appliedCount).toBe(0);
   });
+
+  it('counts titles reached via the new auto-migration policy separately', () => {
+    const report = buildProviderConfirmationPipelineReport({
+      ...baseInput(),
+      mode: 'apply',
+      appliedSeries: [
+        {
+          title: 'Some Auto-Migrated Show', seriesId: 's5', provider: 'tmdb', providerId: '99', classification: 'BLOCKED_RISK', episodeUpdateCount: 2, posterUpdated: false,
+          preservedOrphanEpisodeCount: 40, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'preserved',
+          migrationClassification: null, viaAutoMigrationPolicy: true, ...operatingFields({ operatingClassification: 'AUTO_MIGRATE', autoMigrationEligible: true }), ...catalogFields(),
+          ...progressFields({ userStatus: { from: 'CAUGHT_UP', to: 'CAUGHT_UP', changed: false } }), verification: passingVerification(),
+        },
+      ],
+    });
+    expect(report.summary.viaAutoMigrationPolicyCount).toBe(1);
+  });
+
+  it('counts a verification failure and surfaces it prominently in the markdown report', () => {
+    const report = buildProviderConfirmationPipelineReport({
+      ...baseInput(),
+      mode: 'apply',
+      appliedSeries: [
+        {
+          title: 'Corrupted Apply Example', seriesId: 's6', provider: 'tmdb', providerId: '77', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 0, posterUpdated: false,
+          preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'derived',
+          migrationClassification: null, viaAutoMigrationPolicy: false, ...operatingFields({ operatingClassification: 'AUTO_MIGRATE' }), ...catalogFields(), ...progressFields(),
+          verification: { passed: false, failedChecks: ['preserved-orphans-untouched: mutated or missing orphan id(s): orph1'] },
+        },
+      ],
+    });
+    expect(report.summary.verificationFailureCount).toBe(1);
+
+    const markdown = buildProviderConfirmationPipelineMarkdownReport(report);
+    expect(markdown).toContain('## ⚠ Verification failures');
+    expect(markdown).toContain('Corrupted Apply Example');
+    expect(markdown).toContain('preserved-orphans-untouched');
+  });
+
+  it('omits the verification-failures section entirely when nothing failed', () => {
+    const report = buildProviderConfirmationPipelineReport(baseInput());
+    const markdown = buildProviderConfirmationPipelineMarkdownReport(report);
+    expect(markdown).not.toContain('Verification failures');
+  });
 });
 
 describe('buildProviderConfirmationPipelineMarkdownReport', () => {
@@ -89,9 +198,16 @@ describe('buildProviderConfirmationPipelineMarkdownReport', () => {
     const report = buildProviderConfirmationPipelineReport({
       ...baseInput(),
       mode: 'apply',
-      appliedSeries: [{ title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, posterUpdated: true, preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], userStatus: { from: 'WATCHING', to: 'COMPLETED', changed: true }, migrationIntent: false, statusSource: 'derived', migrationClassification: null }],
-      skippedBlockedSeries: [{ title: 'The Flash (2014)', seriesId: 's3', classification: 'BLOCKED_RISK', reason: 'real mid-season gap', migrationIntent: false, migrationClassification: null }],
-      skippedDeferredSeries: [{ title: 'Naruto Shippuden', seriesId: null, classification: null, reason: 'decision is "defer"', migrationIntent: false, migrationClassification: null }],
+      appliedSeries: [
+        {
+          title: 'Friends', seriesId: 's1', provider: 'tvmaze', providerId: '431', classification: 'SAFE_TO_APPLY_LATER', episodeUpdateCount: 236, posterUpdated: true,
+          preservedOrphanEpisodeCount: 0, preservedOrphanEpisodes: [], migrationIntent: false, statusSource: 'derived',
+          migrationClassification: null, viaAutoMigrationPolicy: false, ...operatingFields({ operatingClassification: 'AUTO_MIGRATE' }), ...catalogFields(),
+          ...progressFields({ userStatus: { from: 'WATCHING', to: 'COMPLETED', changed: true } }), verification: passingVerification(),
+        },
+      ],
+      skippedBlockedSeries: [{ title: 'The Flash (2014)', seriesId: 's3', classification: 'BLOCKED_RISK', reason: 'real mid-season gap', migrationIntent: false, migrationClassification: null, operatingClassification: 'REVIEW_ALIGNMENT' }],
+      skippedDeferredSeries: [{ title: 'Naruto Shippuden', seriesId: null, classification: null, reason: 'decision is "defer"', migrationIntent: false, migrationClassification: null, operatingClassification: 'REVIEW_IDENTITY' }],
       errors: [{ title: 'Some Show', message: 'provider fetch failed: 500' }],
       nextManualReviewCandidates: [{ title: 'Brand New Show', seriesId: 's4', reason: 'no decisions-file entry at all' }],
     });
@@ -124,7 +240,14 @@ describe('buildProviderConfirmationPipelineMarkdownReport', () => {
     const report = buildProviderConfirmationPipelineReport({
       ...baseInput(),
       mode: 'apply',
-      appliedSeries: [{ title: 'The Office (US)', seriesId: 's2', provider: 'tmdb', providerId: '2316', classification: 'SAFE_WITH_SPLIT_EPISODE_TAIL', episodeUpdateCount: 14, posterUpdated: false, preservedOrphanEpisodeCount: 2, preservedOrphanEpisodes: [{ id: 'a', seasonNumber: 4, episodeNumber: 15 }, { id: 'b', seasonNumber: 4, episodeNumber: 16 }], userStatus: { from: 'WATCHING', to: 'WATCHING', changed: false }, migrationIntent: false, statusSource: 'derived', migrationClassification: null }],
+      appliedSeries: [
+        {
+          title: 'The Office (US)', seriesId: 's2', provider: 'tmdb', providerId: '2316', classification: 'SAFE_WITH_SPLIT_EPISODE_TAIL', episodeUpdateCount: 14, posterUpdated: false,
+          preservedOrphanEpisodeCount: 2, preservedOrphanEpisodes: [{ id: 'a', seasonNumber: 4, episodeNumber: 15 }, { id: 'b', seasonNumber: 4, episodeNumber: 16 }],
+          migrationIntent: false, statusSource: 'derived', migrationClassification: null, viaAutoMigrationPolicy: false,
+          ...operatingFields({ operatingClassification: 'AUTO_MIGRATE' }), ...catalogFields(), ...progressFields(), verification: passingVerification(),
+        },
+      ],
     });
     const markdown = buildProviderConfirmationPipelineMarkdownReport(report);
     expect(markdown).toContain('preserved orphan(s): S4E15, S4E16');

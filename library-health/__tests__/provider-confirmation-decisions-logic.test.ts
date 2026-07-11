@@ -7,6 +7,8 @@ import { checkSplitEpisodeTailOnly } from '../split-episode-tail-logic';
 function fakeComparison(overrides: Partial<CompareSeriesCatalogResult> = {}): CompareSeriesCatalogResult {
   return {
     classification: 'NO_CHANGE',
+    bulkInsertReason: null,
+    seasonZeroReason: null,
     warnings: [],
     newEpisodes: [],
     releasedNewEpisodeCount: 0,
@@ -16,6 +18,8 @@ function fakeComparison(overrides: Partial<CompareSeriesCatalogResult> = {}): Co
     proposedNextEpisodeId: null,
     proposedNextEpisodeLabel: null,
     proposedNextEpisodeIsNew: false,
+    proposedNextSeasonNumber: null,
+    proposedNextEpisodeNumber: null,
     nextEpisodeWouldChange: false,
     proposedUserStatus: UserSeriesStatus.WATCHING,
     userStatusWouldChangeToWatching: false,

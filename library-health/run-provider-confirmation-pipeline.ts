@@ -53,14 +53,23 @@ import { tmdbImageUrl } from '../tmdb-enrichment/apply-plan-writes';
 import { decideUserStatusUpdate } from '../tmdb-enrichment/apply-plan-writes';
 import { TvMazeClient, TvMazeRequestError } from '../secondary-provider-audit/tvmaze-client';
 import { chunkArray, compareSeriesCatalog, LocalEpisodeInput, ProviderEpisodeInput } from '../episode-release-refresh/refresh-logic';
+import { createMissingSeasonsAndEpisodes } from '../episode-release-refresh/season-episode-writer';
 import { buildSeasonShape } from '../tmdb-enrichment/season-structure-tiebreak';
 import { loadSeriesHealthInputs } from './load-series-health-inputs';
 import { checkTitleYearSanity, classifyProviderConfirmationDryRun, ProviderConfirmationDecision } from './provider-confirmation-decisions-logic';
 import { checkBenignSeasonZeroOrphan, detectRealSeasonShrink, findOrphanedWatchedEpisodes } from './season-zero-orphan-logic';
 import { checkSplitEpisodeTailOnly } from './split-episode-tail-logic';
 import { buildConfirmedSeriesApplyPlan, ExternalIdsUpdate, isSafeApplyClassification, resolvePreservedOrphanEpisodes } from './apply-confirmed-provider-logic';
-import { buildMigrationApplyPlan, classifyMigrationConfirmation, isProtectedMigrationStatus } from './migration-confirmation-logic';
+import { buildMigrationApplyPlan, classifyMigrationConfirmation, isProtectedMigrationStatus, StatusSource } from './migration-confirmation-logic';
 import { EpisodeUpdatePlan, LocalEpisodeForApply, ProviderEpisodeForApply } from './apply-friends-tvmaze-logic';
+import { titleSimilarity, extractTitleYearHint } from '../trakt-enrichment/scoring';
+import { classifyIdentityConfidence, evaluateAutoMigrationEligibility, resolveObjectiveMigrationStatus, shouldForceWatchingForPendingNextEpisode } from './migration-policy-logic';
+import { buildMigrationCatalogInsertPlan, CATALOG_RECONCILIATION_IMPORT_BATCH_ID, computeMatchedEpisodeCounts } from './migration-catalog-plan-logic';
+import { classifyMigrationOperatingOutcome } from './migration-operating-outcome';
+import { buildBatchManifest } from './batch-manifest-logic';
+import { buildBatchManifestMarkdown, writeBatchManifest } from './batch-manifest-reports';
+import { captureSeriesSnapshot } from './verification-snapshot';
+import { verifySeriesPostApply } from './verification-logic';
 import {
   buildProviderConfirmationPipelineMarkdownReport,
   buildProviderConfirmationPipelineReport,
@@ -77,6 +86,7 @@ const DEFAULT_OUT_DIR = path.join(__dirname, 'output');
 const DEFAULT_DECISIONS_PATH = path.join(__dirname, 'provider-confirmation-decisions.json');
 const DEFAULT_MAX_SEASON_ZERO_ORPHANS = 1;
 const APPLY_FLAG = '--apply-safe-confirmed';
+const APPLY_AUTO_SAFE_MIGRATIONS_FLAG = '--apply-auto-safe-migrations';
 
 interface CliOptions {
   userId: string;
@@ -84,6 +94,14 @@ interface CliOptions {
   decisionsPath: string;
   maxSeasonZeroOrphans: number;
   apply: boolean;
+  // Modifier, not a standalone trigger — only takes effect when `apply` is
+  // also true. Expands what gets written beyond the existing safe-confirmed
+  // set to also include titles the new objective auto-migration policy
+  // (migration-policy-logic.ts) finds eligible without an explicit
+  // migrationIntent flag. Kept separate from APPLY_FLAG so rollout can
+  // stay staged: existing --apply-safe-confirmed behavior is byte-for-byte
+  // unchanged unless this is also passed.
+  applyAutoSafeMigrations: boolean;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -97,6 +115,7 @@ function parseArgs(argv: string[]): CliOptions {
     decisionsPath: DEFAULT_DECISIONS_PATH,
     maxSeasonZeroOrphans: DEFAULT_MAX_SEASON_ZERO_ORPHANS,
     apply: argv.includes(APPLY_FLAG),
+    applyAutoSafeMigrations: argv.includes(APPLY_AUTO_SAFE_MIGRATIONS_FLAG),
   };
   for (const arg of argv) {
     if (arg.startsWith('--user=')) options.userId = arg.slice('--user='.length);
@@ -272,6 +291,7 @@ async function main() {
         reason: `decision is "${decision.decision}" — not confirmed, never applied.`,
         migrationIntent: decision.migrationIntent === true,
         migrationClassification: null,
+        operatingClassification: 'REVIEW_IDENTITY',
       });
       console.log(`  [${decision.decision.toUpperCase()}] ${decision.title}`);
       continue;
@@ -286,6 +306,7 @@ async function main() {
         reason: `no local series titled "${decision.title}" was found.`,
         migrationIntent: decision.migrationIntent === true,
         migrationClassification: null,
+        operatingClassification: 'REVIEW_IDENTITY',
       });
       console.log(`  [LOCAL_SERIES_NOT_FOUND] ${decision.title}`);
       continue;
@@ -299,6 +320,7 @@ async function main() {
         reason: 'decision is "confirm" but is missing a "provider" and/or "providerId".',
         migrationIntent: decision.migrationIntent === true,
         migrationClassification: null,
+        operatingClassification: 'REVIEW_IDENTITY',
       });
       console.log(`  [BLOCKED_RISK] ${decision.title} — missing provider/providerId`);
       continue;
@@ -342,16 +364,35 @@ async function main() {
 
       const decisionResult = classifyProviderConfirmationDryRun({ titleYearSanity: sanity, comparison, seasonZeroOrphanCheck, splitEpisodeTailCheck });
 
-      // --- Migration mode: only ever reachable when a human has
-      // explicitly set migrationIntent: true for this title (task
-      // requirement 6). Every other title takes the exact code path it
-      // always has, byte for byte. See migration-confirmation-logic.ts. --
+      // --- Objective auto-migration policy — computed for EVERY confirmed,
+      // provider-fetched title, regardless of migrationIntent. See
+      // migration-policy-logic.ts and docs/stable-version-migration-todo.md
+      // for the full design and the evidence behind it. ------------------
+      const identitySimilarity = titleSimilarity(extractTitleYearHint(decision.title).bareTitle, fetched.candidateTitle);
+      const identityBand = classifyIdentityConfidence({ titleYearSanityPassed: sanity.passed, similarity: identitySimilarity });
+      const autoEligibility = evaluateAutoMigrationEligibility({ titleYearSanityPassed: sanity.passed, identityBand, realSeasonShrinkDetected });
+      const matchedEpisodeCounts = computeMatchedEpisodeCounts(fullLocalEpisodes, fetched.episodes);
+      const objectiveStatus = resolveObjectiveMigrationStatus({
+        matchedWatchedCount: matchedEpisodeCounts.matchedWatchedCount,
+        matchedTotalCount: matchedEpisodeCounts.matchedTotalCount,
+        currentUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
+        providerReleaseStatus: fetched.releaseStatus,
+      });
+
+      // --- Migration mode: reachable either via an explicit human
+      // migrationIntent: true (unchanged, byte-for-byte, from before this
+      // task — see migration-confirmation-logic.ts), OR — new — via the
+      // objective auto-policy finding this title eligible with no flag at
+      // all. An explicit migrationIntent always takes priority when both
+      // are true, so a human's statusOverride is never silently replaced
+      // by the objective derivation. --------------------------------------
       const migrationIntent = decision.migrationIntent === true;
       const migrationResult = migrationIntent
         ? classifyMigrationConfirmation({
             baseClassification: decisionResult.classification,
             baseReason: decisionResult.reason,
             titleYearSanityPassed: sanity.passed,
+            realSeasonShrinkDetected,
             orphanedWatchedEpisodes,
             currentUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
             migration: { migrationIntent: true, statusOverride: decision.statusOverride },
@@ -365,11 +406,17 @@ async function main() {
       const migrationClassificationForReport = migrationResult ? (migrationResult.classification as 'SAFE_MIGRATION_WITH_PRESERVED_ORPHANS' | 'SAFE_MIGRATION_WITH_STATUS_OVERRIDE' | 'BLOCKED_DESTRUCTIVE_RISK') : null;
       const isMigrationSafe = migrationClassificationForReport === 'SAFE_MIGRATION_WITH_PRESERVED_ORPHANS' || migrationClassificationForReport === 'SAFE_MIGRATION_WITH_STATUS_OVERRIDE';
       const isBaseSafe = isSafeApplyClassification(decisionResult.classification);
+      // Only ever consulted when no explicit migrationIntent was set and
+      // the base pipeline would otherwise block — an explicit human
+      // decision always wins over the automatic policy, never the reverse.
+      const isAutoMigrateEligible = !migrationIntent && !isBaseSafe && autoEligibility.eligible;
 
-      console.log(`  [${decisionResult.classification}] ${decision.title} (${decision.provider}:${providerId})${migrationResult ? ` [migration: ${migrationResult.classification}]` : ''}`);
+      console.log(
+        `  [${decisionResult.classification}] ${decision.title} (${decision.provider}:${providerId})${migrationResult ? ` [migration: ${migrationResult.classification}]` : ''}${isAutoMigrateEligible ? ' [auto-migrate eligible]' : ''}`,
+      );
 
-      if (!isBaseSafe && !isMigrationSafe) {
-        const reason = migrationResult ? migrationResult.reason : decisionResult.reason;
+      if (!isBaseSafe && !isMigrationSafe && !isAutoMigrateEligible) {
+        const reason = migrationResult ? migrationResult.reason : `${decisionResult.reason} (auto-migration policy: ${autoEligibility.reason})`;
         skippedBlockedSeries.push({
           title: decision.title,
           seriesId: local.seriesId,
@@ -377,6 +424,15 @@ async function main() {
           reason,
           migrationIntent,
           migrationClassification: migrationClassificationForReport,
+          operatingClassification: classifyMigrationOperatingOutcome({
+            providerFetchFailed: false,
+            hasConfirmedIdentity: true,
+            titleYearSanityPassed: sanity.passed,
+            identityBand,
+            realSeasonShrinkDetected,
+            engineInvariantViolated: false,
+            hasPendingCatalogWork: false, // moot — REVIEW_* is decided before this is ever consulted
+          }),
         });
         if (decisionResult.classification === 'BLOCKED_RISK' || decisionResult.classification === 'NEEDS_MANUAL_REVIEW' || migrationClassificationForReport === 'BLOCKED_DESTRUCTIVE_RISK') {
           nextManualReviewCandidates.push({ title: decision.title, seriesId: local.seriesId, reason: `classified ${migrationClassificationForReport ?? decisionResult.classification} — ${reason}` });
@@ -384,9 +440,9 @@ async function main() {
         continue;
       }
 
-      // --- Safe classification from here (either the ordinary pipeline or
-      // migration mode): build the plan (always — this is the preview even
-      // in dry-run mode). -----------------------------------------------
+      // --- Safe classification from here (base pipeline, explicit
+      // migration, or the new auto-policy): build the plan (always — this
+      // is the preview even in dry-run mode). -----------------------------
       const localEpisodesForApply: LocalEpisodeForApply[] = fullLocalEpisodes.map((e) => ({
         id: e.id,
         seasonNumber: e.seasonNumber,
@@ -405,9 +461,23 @@ async function main() {
         runtimeMinutes: e.runtimeMinutes,
       }));
 
-      // Unify the two possible plan shapes (ordinary vs. migration) behind
-      // a small common view so the idempotency check, dry-run reporting,
-      // and apply transaction below don't need to be duplicated.
+      // New capability, applied uniformly whenever a title is being
+      // written at all (base, migration, or auto-migrate alike) — see
+      // migration-catalog-plan-logic.ts. Confirmed via this task's
+      // baseline audit that this pipeline previously created NO missing
+      // Season/Episode rows under any classification.
+      const localSeasonNumbersForCatalogPlan = [...new Set(fullLocalEpisodes.map((e) => e.seasonNumber))];
+      const catalogInsertPlan = buildMigrationCatalogInsertPlan({
+        newEpisodes: comparison.newEpisodes,
+        providerEpisodes: fetched.episodes,
+        localSeasonNumbers: localSeasonNumbersForCatalogPlan,
+      });
+
+      const usingMigrationOrAutoPlan = (isMigrationSafe && migrationResult !== null) || isAutoMigrateEligible;
+
+      // Unify the different plan shapes behind a small common view so the
+      // idempotency check, dry-run reporting, and apply transaction below
+      // don't need to be duplicated.
       let unifiedExternalIdsUpdate: ExternalIdsUpdate;
       let unifiedPosterUpdate: { from: string | null; to: string; wouldChange: boolean } | null;
       let unifiedEpisodeUpdates: EpisodeUpdatePlan[];
@@ -415,9 +485,15 @@ async function main() {
       let unifiedPreservedOrphanEpisodes: ReturnType<typeof findOrphanedWatchedEpisodes>;
       let unifiedResolvedUserStatus: UserSeriesStatus;
       let unifiedResolvedNextEpisodeId: string | null;
-      let unifiedStatusSource: 'derived' | 'human-override';
+      let unifiedStatusSource: StatusSource;
 
-      if (isMigrationSafe && migrationResult) {
+      if (usingMigrationOrAutoPlan) {
+        // Both explicit-migration and auto-eligible titles share the exact
+        // same plan shape — buildMigrationApplyPlan doesn't care WHY
+        // orphans are being preserved or WHY a status was resolved a
+        // certain way, only that it's told what to preserve/resolve to.
+        const resolvedUserStatus = isMigrationSafe && migrationResult ? migrationResult.resolvedUserStatus : objectiveStatus.resolvedUserStatus;
+        const statusSource: StatusSource = isMigrationSafe && migrationResult ? migrationResult.statusSource : objectiveStatus.statusSource;
         const migrationPlan = buildMigrationApplyPlan({
           seriesId: local.seriesId,
           title: decision.title,
@@ -429,8 +505,8 @@ async function main() {
           localEpisodes: localEpisodesForApply,
           providerEpisodes: providerEpisodesForApply,
           orphanedWatchedEpisodes,
-          resolvedUserStatus: migrationResult.resolvedUserStatus,
-          statusSource: migrationResult.statusSource,
+          resolvedUserStatus,
+          statusSource,
           currentNextEpisodeId: local.progress?.nextEpisodeId ?? null,
         });
         unifiedExternalIdsUpdate = migrationPlan.externalIdsUpdate;
@@ -471,16 +547,60 @@ async function main() {
         unifiedStatusSource = 'derived';
       }
 
+      // Post-catalog-creation correction (see shouldForceWatchingForPendingNextEpisode's
+      // header comment in migration-policy-logic.ts): none of the three
+      // branches above know about episodes catalogInsertPlan is about to
+      // create in THIS SAME apply — they only ever reasoned about episodes
+      // that already existed locally. Real finding (Batch 1 apply + Batch 2
+      // dry run): a title with e.g. 90 new unwatched episodes about to be
+      // created could still be left with a stale/incorrect "nothing to
+      // watch" userStatus/nextEpisodeId. Applied uniformly across all three
+      // branches, and only ever fires when there's a real next episode to
+      // point to and nothing more privileged says otherwise.
+      const hasProposedNextEpisode = comparison.proposedNextEpisodeLabel !== null;
+      const explicitStatusOverrideGiven = migrationIntent && decision.statusOverride !== undefined;
+      // pendingNewNextEpisodeCreation: the proposed next episode doesn't
+      // exist locally yet (comparison ran before catalogInsertPlan
+      // executes), so the real id can only be resolved once it's actually
+      // been created — left null here and re-resolved against the live
+      // catalog inside the apply transaction below, or reported as a known
+      // pending change (without a concrete id) in the dry-run preview.
+      let pendingNewNextEpisodeCreation = false;
+      if (shouldForceWatchingForPendingNextEpisode({ hasProposedNextEpisode, liveUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN, explicitStatusOverrideGiven })) {
+        unifiedResolvedUserStatus = UserSeriesStatus.WATCHING;
+        unifiedStatusSource = 'derived';
+        if (comparison.proposedNextEpisodeIsNew) {
+          unifiedResolvedNextEpisodeId = null;
+          pendingNewNextEpisodeCreation = true;
+        } else {
+          unifiedResolvedNextEpisodeId = comparison.proposedNextEpisodeId;
+        }
+      }
+
       // Idempotency check: has this exact provider/providerId already been
-      // written to ExternalIds, with nothing left for the plan to change?
-      // If so this is a pure re-confirmation — report it separately and
-      // skip opening a transaction entirely, rather than re-reporting it
-      // as "safe, pending apply" forever or rewriting ExternalIds.matchedAt
-      // for no reason on every apply run.
+      // written to ExternalIds, with nothing left for the plan to change,
+      // AND no missing episodes/seasons left to create? If so this is a
+      // pure re-confirmation — report it separately and skip opening a
+      // transaction entirely, rather than re-reporting it as "safe,
+      // pending apply" forever or rewriting ExternalIds.matchedAt for no
+      // reason on every apply run.
       const alreadyMatchedProvider = local.externalIds?.provider === decision.provider && local.externalIds?.providerId === providerId;
       const wouldChangeProgress =
         (local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN) !== unifiedResolvedUserStatus || (local.progress?.nextEpisodeId ?? null) !== unifiedResolvedNextEpisodeId;
-      const isNoOp = alreadyMatchedProvider && unifiedEpisodeUpdateCount === 0 && unifiedPosterUpdate === null && !wouldChangeProgress;
+      const hasCatalogWorkPending = catalogInsertPlan.episodesToInsert.length > 0;
+      const isNoOp = alreadyMatchedProvider && unifiedEpisodeUpdateCount === 0 && unifiedPosterUpdate === null && !wouldChangeProgress && !hasCatalogWorkPending;
+
+      const operatingClassification = classifyMigrationOperatingOutcome({
+        providerFetchFailed: false,
+        hasConfirmedIdentity: true,
+        titleYearSanityPassed: sanity.passed,
+        identityBand,
+        realSeasonShrinkDetected,
+        engineInvariantViolated: false,
+        hasPendingCatalogWork: !isNoOp,
+      });
+      const viaAutoMigrationPolicy = isAutoMigrateEligible;
+
       if (isNoOp) {
         alreadyAppliedSeries.push({
           title: decision.title,
@@ -495,7 +615,17 @@ async function main() {
         continue;
       }
 
-      if (!options.apply) {
+      // The new auto-migrate path additionally requires the explicit
+      // --apply-auto-safe-migrations modifier, even when --apply-safe-confirmed
+      // is set — see APPLY_AUTO_SAFE_MIGRATIONS_FLAG's comment. A title
+      // that's ONLY eligible via the auto-policy (not base/explicit-migration
+      // safe) is treated as dry-run-safe until that second flag is present,
+      // regardless of whether the general apply flag is set.
+      const authorizedToWrite = options.apply && (isBaseSafe || isMigrationSafe || (isAutoMigrateEligible && options.applyAutoSafeMigrations));
+
+      if (!authorizedToWrite) {
+        const previewFromStatus = local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN;
+        const previewFromNextEpisodeId = local.progress?.nextEpisodeId ?? null;
         dryRunSafeSeries.push({
           title: decision.title,
           seriesId: local.seriesId,
@@ -506,9 +636,35 @@ async function main() {
           wouldUpdatePoster: unifiedPosterUpdate !== null,
           preservedOrphanEpisodeCount: unifiedPreservedOrphanEpisodes.length,
           preservedOrphanEpisodes: unifiedPreservedOrphanEpisodes,
+          userStatus: { from: previewFromStatus, to: unifiedResolvedUserStatus, changed: previewFromStatus !== unifiedResolvedUserStatus },
+          nextEpisodeId: {
+            from: previewFromNextEpisodeId,
+            to: unifiedResolvedNextEpisodeId,
+            // pendingNewNextEpisodeCreation: the correct next episode is a
+            // brand-new row that doesn't exist yet, so `to` stays null (no
+            // real id to show in a dry run) — but this IS still a real
+            // change, not a no-op, so `changed` can't rely on simple
+            // equality here the way every other case can.
+            changed: previewFromNextEpisodeId !== unifiedResolvedNextEpisodeId || pendingNewNextEpisodeCreation,
+          },
           migrationIntent,
           statusSource: unifiedStatusSource,
           migrationClassification: migrationClassificationForReport,
+          operatingClassification,
+          identityBand,
+          autoMigrationEligible: autoEligibility.eligible,
+          autoMigrationEligibilityReason:
+            isAutoMigrateEligible && !options.applyAutoSafeMigrations ? `${autoEligibility.reason} (blocked from writing this run: --apply-auto-safe-migrations not passed)` : autoEligibility.reason,
+          // Preview counts — nothing has actually been created yet in
+          // dry-run mode. Previously hardcoded to [] / 0 here, which
+          // silently hid planned catalog-reconciliation work from the
+          // dry-run report; fixed as part of building the batch manifest
+          // (Phase 6), which reads these fields directly.
+          seasonsCreated: catalogInsertPlan.seasonNumbersToCreate,
+          episodesCreated: catalogInsertPlan.episodesToInsert.length,
+          matchedWatchedCount: matchedEpisodeCounts.matchedWatchedCount,
+          matchedTotalCount: matchedEpisodeCounts.matchedTotalCount,
+          viaAutoMigrationPolicy,
         });
         continue;
       }
@@ -517,7 +673,23 @@ async function main() {
       // failure here never blocks or rolls back any other series. ---------
       const fromStatus = local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN;
       let toStatus = fromStatus;
+      const fromNextEpisodeId = local.progress?.nextEpisodeId ?? null;
+      let toNextEpisodeId = fromNextEpisodeId;
       const usingMigrationPlan = isMigrationSafe && migrationResult !== null;
+      const matchSource = usingMigrationPlan
+        ? 'library-health:provider-confirmation-pipeline:migration'
+        : viaAutoMigrationPolicy
+          ? 'library-health:provider-confirmation-pipeline:auto-migration'
+          : 'library-health:provider-confirmation-pipeline';
+
+      const catalogResult = { seasonsCreated: [] as number[], episodesInserted: 0, duplicatesSkipped: 0 };
+
+      // Phase 7 verification, wired in for real: captured immediately
+      // before/after this series' own transaction so every real apply is
+      // independently checked against its own expectation, not just
+      // trusted. Read via the plain client (not tx) before the transaction
+      // starts — this is the pre-write state.
+      const beforeSnapshot = await captureSeriesSnapshot(prisma, local.seriesId, options.userId);
 
       await prisma.$transaction(async (tx) => {
         await tx.externalIds.upsert({
@@ -533,7 +705,7 @@ async function main() {
             // no dedicated column of its own — see
             // docs/library-health-provider-confirmation-runbook.md.
             tmdbId: unifiedExternalIdsUpdate.tmdbId,
-            matchSource: usingMigrationPlan ? 'library-health:provider-confirmation-pipeline:migration' : 'library-health:provider-confirmation-pipeline',
+            matchSource,
             matchConfidence: 1,
             matchedAt: generatedAt,
           },
@@ -541,7 +713,7 @@ async function main() {
             provider: unifiedExternalIdsUpdate.provider,
             providerId: unifiedExternalIdsUpdate.providerId,
             tmdbId: unifiedExternalIdsUpdate.tmdbId,
-            matchSource: usingMigrationPlan ? 'library-health:provider-confirmation-pipeline:migration' : 'library-health:provider-confirmation-pipeline',
+            matchSource,
             matchConfidence: 1,
             matchedAt: generatedAt,
           },
@@ -565,6 +737,22 @@ async function main() {
           await tx.episode.update({ where: { id: update.episodeId }, data });
         }
 
+        // New capability: create missing Season/Episode rows the provider
+        // has that the local catalog doesn't — never touches an existing
+        // row, same shared write path episode-release-refresh's Phase 1
+        // uses (season-episode-writer.ts), tagged with this pipeline's own
+        // provenance marker so the two are always distinguishable later.
+        if (catalogInsertPlan.episodesToInsert.length > 0) {
+          const result = await createMissingSeasonsAndEpisodes(tx, {
+            seriesId: local.seriesId,
+            insertPlan: catalogInsertPlan,
+            importBatchId: CATALOG_RECONCILIATION_IMPORT_BATCH_ID,
+          });
+          catalogResult.seasonsCreated = result.seasonsCreated;
+          catalogResult.episodesInserted = result.episodesInserted;
+          catalogResult.duplicatesSkipped = result.duplicatesSkipped;
+        }
+
         // Re-reads the LIVE status inside the transaction rather than
         // trusting the snapshot read at the top of the loop.
         const liveProgress = await tx.userSeriesProgress.findUnique({ where: { userId_seriesId: { userId: options.userId, seriesId: local.seriesId } } });
@@ -572,11 +760,12 @@ async function main() {
 
         let finalStatus: UserSeriesStatus;
         let finalNextEpisodeId: string | null;
-        if (usingMigrationPlan) {
+        if (usingMigrationOrAutoPlan) {
           // Migration mode's own protected-status re-check (task
-          // requirement 8) — re-verified fresh here, not trusted from the
-          // classification-time snapshot, exactly like the non-migration
-          // path's decideUserStatusUpdate re-check below.
+          // requirement 8), applied identically for the auto-migrate path —
+          // re-verified fresh here, not trusted from the classification-time
+          // snapshot, exactly like the non-migration path's
+          // decideUserStatusUpdate re-check below.
           finalStatus = isProtectedMigrationStatus(liveStatus) ? liveStatus : unifiedResolvedUserStatus;
           finalNextEpisodeId = unifiedResolvedNextEpisodeId;
         } else {
@@ -585,7 +774,29 @@ async function main() {
           finalStatus = statusDecision.shouldUpdate ? unifiedResolvedUserStatus : liveStatus;
           finalNextEpisodeId = unifiedResolvedNextEpisodeId;
         }
+
+        // Final, uniform post-catalog-creation correction — re-checked
+        // against the LIVE status (not the pre-transaction snapshot the
+        // earlier pre-correction used, matching every other live re-check
+        // in this transaction), and this time resolving the REAL id of a
+        // brand-new proposed-next episode now that
+        // createMissingSeasonsAndEpisodes has actually run. See
+        // shouldForceWatchingForPendingNextEpisode's header comment.
+        if (shouldForceWatchingForPendingNextEpisode({ hasProposedNextEpisode, liveUserStatus: liveStatus, explicitStatusOverrideGiven })) {
+          finalStatus = UserSeriesStatus.WATCHING;
+          if (comparison.proposedNextEpisodeIsNew && comparison.proposedNextSeasonNumber !== null && comparison.proposedNextEpisodeNumber !== null) {
+            const createdNext = await tx.episode.findFirst({
+              where: { season: { seriesId: local.seriesId, seasonNumber: comparison.proposedNextSeasonNumber }, episodeNumber: comparison.proposedNextEpisodeNumber },
+              select: { id: true },
+            });
+            finalNextEpisodeId = createdNext?.id ?? null;
+          } else {
+            finalNextEpisodeId = comparison.proposedNextEpisodeId;
+          }
+        }
+
         toStatus = finalStatus;
+        toNextEpisodeId = finalNextEpisodeId;
 
         await tx.userSeriesProgress.upsert({
           where: { userId_seriesId: { userId: options.userId, seriesId: local.seriesId } },
@@ -593,6 +804,30 @@ async function main() {
           update: { userStatus: finalStatus, nextEpisodeId: finalNextEpisodeId },
         });
       });
+
+      // Verify this exact write against its own expectation — immediately,
+      // same run, before moving to the next title. A failure here does NOT
+      // roll back (the transaction already committed; this task's rollback
+      // module — rollback-logic.ts / rollback-executor.ts — is the
+      // documented recovery path, not an automatic reversal here) but IS
+      // loudly surfaced in both the console and the report, per "every
+      // automatic decision must have an explainable reason" and the
+      // controlled-rollout plan's stop condition on any verification failure.
+      const afterSnapshot = await captureSeriesSnapshot(prisma, local.seriesId, options.userId);
+      const verificationResult = verifySeriesPostApply(beforeSnapshot, afterSnapshot, {
+        seriesId: local.seriesId,
+        expectedImportBatchId: CATALOG_RECONCILIATION_IMPORT_BATCH_ID,
+        expectedNewSeasonNumbers: catalogResult.seasonsCreated,
+        expectedNewEpisodeCount: catalogResult.episodesInserted,
+        preservedOrphanEpisodeIds: unifiedPreservedOrphanEpisodes.map((e) => e.id),
+        expectedUserStatus: toStatus,
+        expectedNextEpisodeId: toNextEpisodeId,
+      });
+      const failedChecks = verificationResult.checks.filter((c) => c.status === 'FAIL').map((c) => `${c.name}: ${c.detail}`);
+      if (failedChecks.length > 0) {
+        console.error(`  [VERIFICATION FAILED] ${decision.title}:`);
+        for (const f of failedChecks) console.error(`    - ${f}`);
+      }
 
       appliedSeries.push({
         title: decision.title,
@@ -605,9 +840,20 @@ async function main() {
         preservedOrphanEpisodeCount: unifiedPreservedOrphanEpisodes.length,
         preservedOrphanEpisodes: unifiedPreservedOrphanEpisodes,
         userStatus: { from: fromStatus, to: toStatus, changed: fromStatus !== toStatus },
+        nextEpisodeId: { from: fromNextEpisodeId, to: toNextEpisodeId, changed: fromNextEpisodeId !== toNextEpisodeId },
         migrationIntent,
         statusSource: unifiedStatusSource,
         migrationClassification: migrationClassificationForReport,
+        operatingClassification,
+        identityBand,
+        autoMigrationEligible: autoEligibility.eligible,
+        autoMigrationEligibilityReason: autoEligibility.reason,
+        seasonsCreated: catalogResult.seasonsCreated,
+        episodesCreated: catalogResult.episodesInserted,
+        matchedWatchedCount: matchedEpisodeCounts.matchedWatchedCount,
+        matchedTotalCount: matchedEpisodeCounts.matchedTotalCount,
+        viaAutoMigrationPolicy,
+        verification: { passed: verificationResult.passed, failedChecks },
       });
     } catch (err) {
       const isNotFound = (err instanceof TmdbRequestError || err instanceof TvMazeRequestError) && err.status === 404;
@@ -654,6 +900,20 @@ async function main() {
   console.log(`  ${written.archivedMarkdownPath}`);
   console.log('\nSummary:');
   console.log(JSON.stringify(report.summary, null, 2));
+
+  // Always additionally build (and write) the batch manifest — Phase 6.
+  // This NEVER writes to the database; it's a read-only projection of the
+  // report above, restricted to the AUTO_MIGRATE subset, deterministically
+  // ordered. Safe to compute on every run, apply or dry-run alike, since it
+  // never gates or performs any write itself.
+  const batchId = `library-health:provider-confirmation-pipeline:${generatedAt.toISOString()}`;
+  const manifest = buildBatchManifest({ report, batchId, generatedAt });
+  const manifestMarkdown = buildBatchManifestMarkdown(manifest);
+  const writtenManifest = writeBatchManifest(options.outDir, manifest, manifestMarkdown);
+
+  console.log(`\nBatch manifest written (proposed batch size: ${manifest.batchSize}):`);
+  console.log(`  ${writtenManifest.latestJsonPath}`);
+  console.log(`  ${writtenManifest.latestMarkdownPath}`);
 
   await prisma.$disconnect();
 }

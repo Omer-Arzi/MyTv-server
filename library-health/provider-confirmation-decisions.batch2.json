@@ -1,0 +1,94 @@
+[
+  {
+    "title": "A Certain Scientific Railgun",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 30977,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 48 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Somebody Feed Phil",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 76305,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 9 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "TOUGEN ANKI",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 253811,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 1 episode backfill with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Black Butler",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 50712,
+    "migrationIntent": true,
+    "notes": "Migration mode (MIGRATION_SMALL_ORPHAN_READY): identity confirmed, every real season matches TMDb exactly, only 1 benign season-0 orphan preserved untouched. No statusOverride \u2014 current status carried forward unchanged rather than recomputed. From provider-confirmation cleanup-plan review."
+  },
+  {
+    "title": "Sex Education",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 81356,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 24 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "xxxHOLiC",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 36250,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 25 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Blue Exorcist",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 38464,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 37 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Danny Phantom",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 2309,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 20 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Sentenced to Be a Hero",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 249907,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 8 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Bungo Stray Dogs",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 65931,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 3 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "A Certain Scientific Accelerator",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 90546,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 5 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Edens Zero",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 104711,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 25 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  },
+  {
+    "title": "Castlevania",
+    "decision": "confirm",
+    "provider": "tmdb",
+    "providerId": 71024,
+    "notes": "Bucket B deep-inspection (LIKELY_SAFE_METADATA_ENRICHMENT): exact title/year, zero orphaned watches, no season shrink, no userStatus change. Apply-diff proved 12 episode backfills with zero overwrites of existing local data. From provider-confirmation Bucket B review."
+  }
+]
