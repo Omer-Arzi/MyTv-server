@@ -19,4 +19,13 @@ export class WatchNextItemDto {
     description: 'My personal viewing status for this series — always WATCHING for this section.',
   })
   userStatus: UserSeriesStatus;
+
+  @ApiProperty({
+    example: 87,
+    nullable: true,
+    description:
+      'How many known catalog episodes come after nextEpisode, in (seasonNumber, episodeNumber) order — nextEpisode itself is not counted. ' +
+      'Null when this could not be reliably determined (should not normally happen); clients should render nothing rather than assume 0.',
+  })
+  remainingEpisodesAfterNext: number | null;
 }

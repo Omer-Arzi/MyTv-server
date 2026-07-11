@@ -1,8 +1,10 @@
 import { UserSeriesStatus } from '@prisma/client';
 import {
+  computeRemainingEpisodesAfterNext,
   filterNonStaleWatchNextCandidates,
   filterReleasedNextEpisodes,
   filterTrustedStaleCandidates,
+  groupOrderedEpisodeIdsBySeriesId,
   isTrustedStaleCandidate,
   ProgressWithNextEpisode,
   StaleCandidateProgress,
@@ -249,5 +251,76 @@ describe('filterNonStaleWatchNextCandidates', () => {
     expect(watchNextIds).toEqual(['fresh']);
     expect(staleIds).toEqual(['stale']);
     expect(watchNextIds.filter((id) => staleIds.includes(id))).toEqual([]);
+  });
+});
+
+// Watch Next "+N" remaining-episodes indicator (mobile Continue Watching
+// card) — see docs comment on computeRemainingEpisodesAfterNext for the
+// null-vs-0 contract this is testing.
+describe('computeRemainingEpisodesAfterNext', () => {
+  it('counts episodes strictly after the next episode, excluding it', () => {
+    // 100-episode catalog, next episode is the 13th (index 12) -> 87 remain after it.
+    const ordered = Array.from({ length: 100 }, (_, i) => `ep-${i + 1}`);
+    expect(computeRemainingEpisodesAfterNext(ordered, 'ep-13')).toBe(87);
+  });
+
+  it('returns 0 when the next episode is the last known episode', () => {
+    const ordered = ['ep-1', 'ep-2', 'ep-3'];
+    expect(computeRemainingEpisodesAfterNext(ordered, 'ep-3')).toBe(0);
+  });
+
+  it('returns the full count minus one when the next episode is first', () => {
+    const ordered = ['ep-1', 'ep-2', 'ep-3'];
+    expect(computeRemainingEpisodesAfterNext(ordered, 'ep-1')).toBe(2);
+  });
+
+  it('returns null (not 0, not a guess) when the next episode id is not found in the catalog', () => {
+    const ordered = ['ep-1', 'ep-2', 'ep-3'];
+    expect(computeRemainingEpisodesAfterNext(ordered, 'missing')).toBeNull();
+  });
+
+  it('returns null for an empty ordered catalog', () => {
+    expect(computeRemainingEpisodesAfterNext([], 'ep-1')).toBeNull();
+  });
+
+  it('counts episodes that are themselves future/unreleased the same as any other known episode — consistent with the stored catalog, no separate future-episode rule', () => {
+    // The function has no concept of airDate at all — it only knows ordering.
+    // A 5-episode catalog where the last 2 happen to be future-dated in the
+    // caller's world still counts them, since they're part of the known
+    // catalog passed in.
+    const ordered = ['ep-1', 'ep-2', 'ep-3', 'ep-4', 'ep-5'];
+    expect(computeRemainingEpisodesAfterNext(ordered, 'ep-3')).toBe(2);
+  });
+});
+
+describe('groupOrderedEpisodeIdsBySeriesId', () => {
+  it('groups episodes by seriesId while preserving relative order within each group', () => {
+    const grouped = groupOrderedEpisodeIdsBySeriesId([
+      { id: 'a1', seriesId: 'series-a' },
+      { id: 'b1', seriesId: 'series-b' },
+      { id: 'a2', seriesId: 'series-a' },
+      { id: 'b2', seriesId: 'series-b' },
+      { id: 'a3', seriesId: 'series-a' },
+    ]);
+
+    expect(grouped.get('series-a')).toEqual(['a1', 'a2', 'a3']);
+    expect(grouped.get('series-b')).toEqual(['b1', 'b2']);
+  });
+
+  it('returns an empty map for an empty input', () => {
+    expect(groupOrderedEpisodeIdsBySeriesId([])).toEqual(new Map());
+  });
+
+  it('composes with computeRemainingEpisodesAfterNext for a realistic multi-series batch', () => {
+    const grouped = groupOrderedEpisodeIdsBySeriesId([
+      { id: 'a1', seriesId: 'series-a' },
+      { id: 'a2', seriesId: 'series-a' },
+      { id: 'a3', seriesId: 'series-a' },
+      { id: 'b1', seriesId: 'series-b' },
+      { id: 'b2', seriesId: 'series-b' },
+    ]);
+
+    expect(computeRemainingEpisodesAfterNext(grouped.get('series-a') ?? [], 'a1')).toBe(2);
+    expect(computeRemainingEpisodesAfterNext(grouped.get('series-b') ?? [], 'b2')).toBe(0);
   });
 });

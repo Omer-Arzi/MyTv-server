@@ -6,7 +6,12 @@ import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
 import { RecentlyWatchedItemDto, RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
-import { filterNonStaleWatchNextCandidates, filterTrustedStaleCandidates } from './me-query-helpers';
+import {
+  computeRemainingEpisodesAfterNext,
+  filterNonStaleWatchNextCandidates,
+  filterTrustedStaleCandidates,
+  groupOrderedEpisodeIdsBySeriesId,
+} from './me-query-helpers';
 import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 
 @Injectable()
@@ -87,12 +92,46 @@ export class MeService {
       },
     });
 
-    return filterNonStaleWatchNextCandidates(progress, staleCutoff).map((p) => ({
+    const candidates = filterNonStaleWatchNextCandidates(progress, staleCutoff);
+    const remainingEpisodesAfterNextBySeriesId = await this.getRemainingEpisodesAfterNextBySeriesId(candidates);
+
+    return candidates.map((p) => ({
       series: toSeriesSummary(p.series),
       nextEpisode: toEpisodeSummary(p.nextEpisode),
       lastWatchedAt: p.lastWatchedAt,
       userStatus: p.userStatus,
+      remainingEpisodesAfterNext: remainingEpisodesAfterNextBySeriesId.get(p.seriesId) ?? null,
     }));
+  }
+
+  // Watch Next "+N" remaining-episodes indicator (mobile Continue Watching
+  // card): one batched query across every candidate's series, rather than
+  // one query per series. Only ever called with the already-filtered Watch
+  // Next candidate list (never the full unfiltered progress set), so this
+  // never fetches catalog data for a series that won't actually be
+  // returned by getWatchNext.
+  private async getRemainingEpisodesAfterNextBySeriesId(
+    candidates: { seriesId: string; nextEpisode: { id: string } }[],
+  ): Promise<Map<string, number | null>> {
+    if (candidates.length === 0) return new Map();
+
+    const seriesIds = [...new Set(candidates.map((c) => c.seriesId))];
+    const episodes = await this.prisma.episode.findMany({
+      where: { season: { seriesId: { in: seriesIds } } },
+      orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
+      select: { id: true, season: { select: { seriesId: true } } },
+    });
+
+    const orderedEpisodeIdsBySeriesId = groupOrderedEpisodeIdsBySeriesId(
+      episodes.map((episode) => ({ id: episode.id, seriesId: episode.season.seriesId })),
+    );
+
+    const result = new Map<string, number | null>();
+    for (const candidate of candidates) {
+      const orderedEpisodeIds = orderedEpisodeIdsBySeriesId.get(candidate.seriesId) ?? [];
+      result.set(candidate.seriesId, computeRemainingEpisodesAfterNext(orderedEpisodeIds, candidate.nextEpisode.id));
+    }
+    return result;
   }
 
   // stale-series-audit/output/stale-series-accuracy-report.md found this

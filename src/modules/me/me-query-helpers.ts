@@ -101,3 +101,45 @@ export function filterNonStaleWatchNextCandidates<T extends StaleCandidateProgre
     (p) => p.userStatus === UserSeriesStatus.WATCHING && !isTrustedStaleCandidate(p, staleCutoff, now),
   );
 }
+
+// --- Watch Next "+N" remaining-episodes indicator (mobile Continue
+// Watching card) -----------------------------------------------------------
+
+export interface OrderedEpisodeForRemainingCount {
+  id: string;
+  seriesId: string;
+}
+
+// Groups an already (seasonNumber, episodeNumber)-ordered flat episode list
+// (the same ordering rule used everywhere else next-episode logic runs —
+// see e.g. episode-watch.service.ts's findNextEpisode) by seriesId,
+// preserving each series' relative order. Built once for a whole batch of
+// Watch Next candidates (one query, grouped in memory) rather than once per
+// series, to avoid an N+1 query per row in the Watch Next list.
+export function groupOrderedEpisodeIdsBySeriesId(episodes: readonly OrderedEpisodeForRemainingCount[]): Map<string, string[]> {
+  const bySeriesId = new Map<string, string[]>();
+  for (const episode of episodes) {
+    const existing = bySeriesId.get(episode.seriesId);
+    if (existing) {
+      existing.push(episode.id);
+    } else {
+      bySeriesId.set(episode.seriesId, [episode.id]);
+    }
+  }
+  return bySeriesId;
+}
+
+// How many known catalog episodes come after the displayed next episode —
+// NOT counting the next episode itself. `orderedEpisodeIds` must already be
+// sorted (seasonNumber, episodeNumber) ascending for the whole series.
+// Returns null — never 0 — when nextEpisodeId isn't found in the given list
+// at all. That should be structurally impossible (nextEpisodeId always
+// points at a real episode of this series), but is treated as "position
+// could not be reliably determined" rather than silently reported as "no
+// more episodes": the mobile client renders nothing rather than a possibly
+// wrong `+0`/"Final episode" for this case.
+export function computeRemainingEpisodesAfterNext(orderedEpisodeIds: readonly string[], nextEpisodeId: string): number | null {
+  const index = orderedEpisodeIds.indexOf(nextEpisodeId);
+  if (index === -1) return null;
+  return orderedEpisodeIds.length - index - 1;
+}
