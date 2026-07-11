@@ -5,6 +5,7 @@
 
 import { Prisma, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { EpisodeSummaryDto } from '../../common/dto/episode-summary.dto';
+import { deriveUserStatusFromNextEpisode } from '../../common/derive-user-status';
 import { isEpisodeReleased } from '../../common/is-episode-released';
 import { EpisodeDetailDto } from './dto/episode-detail.dto';
 import { SeasonDetailDto } from './dto/season-detail.dto';
@@ -120,6 +121,14 @@ export interface ManualStatusUpdateInput {
   userStatus: ManualUserStatus;
   orderedEpisodes: OrderedEpisodeForNextLookup[];
   watchedEpisodeIds: ReadonlySet<string>;
+  // Only consulted when userStatus === WATCHING (a "resume watching" or
+  // plain re-assert-active request) — needed to derive the ACTUAL correct
+  // resulting status (see below), not just echo back WATCHING.
+  releaseStatus: ReleaseStatus;
+  // The row's nextEpisodeId as it stood before this update — preserved
+  // verbatim for PAUSED/DROPPED (see below) rather than nulled, so a
+  // pause/drop doesn't throw away a value the app already had correct.
+  currentNextEpisodeId: string | null;
 }
 
 export interface ManualStatusUpdateResult {
@@ -127,20 +136,81 @@ export interface ManualStatusUpdateResult {
   nextEpisodeId: string | null;
 }
 
+export interface ActiveProgressInput {
+  orderedEpisodes: OrderedEpisodeForNextLookup[];
+  watchedEpisodeIds: ReadonlySet<string>;
+  releaseStatus: ReleaseStatus;
+  now?: Date;
+}
+
+export interface ActiveProgressResult {
+  // Only ever WATCHING/CAUGHT_UP/COMPLETED — this is "what should an
+  // actively-tracked series' progress be right now," never a
+  // user-controlled/not-applicable value (PAUSED/DROPPED/WATCHLIST/UNKNOWN
+  // are the caller's concern, not this function's — see
+  // episode-release-refresh/progress-reconciliation-logic.ts for the
+  // caller that adds that gating on top of this).
+  userStatus: UserSeriesStatus;
+  nextEpisodeId: string | null;
+}
+
+// The single canonical "what is this series' correct active progress right
+// now, given its local episode catalog and watch history" computation —
+// find the first unwatched, released episode
+// (findFirstUnwatchedEpisodeId — unreleased episodes never count, see
+// src/common/is-episode-released.ts), then derive WATCHING/CAUGHT_UP/
+// COMPLETED from whether one was found (deriveUserStatusFromNextEpisode —
+// the same function markWatched, watch-all, and unwatch all already use).
+// Extracted out of deriveManualStatusUpdate's WATCHING branch below so
+// episode-release-refresh's progress-reconciliation operation
+// (docs/progress-reconciliation-architecture-todo.md) can reuse the exact
+// same composition instead of a second implementation of it.
+export function deriveActiveProgress(input: ActiveProgressInput): ActiveProgressResult {
+  const nextEpisodeId = findFirstUnwatchedEpisodeId(input.orderedEpisodes, input.watchedEpisodeIds, input.now);
+  return {
+    nextEpisodeId,
+    userStatus: deriveUserStatusFromNextEpisode(!!nextEpisodeId, input.releaseStatus),
+  };
+}
+
 // The status-update rules from PATCH /series/:seriesId/status, as pure
-// logic: WATCHING re-derives nextEpisodeId from this user's currently-known
-// episode catalog (best-effort — may come back null for a series with no
-// episodes recorded yet, or if everything currently known is watched);
-// PAUSED/DROPPED/WATCHLIST always clear it, since none of those states
-// implies "here's what to watch next." Never touches WatchlistItem — that's
-// a DB side effect the service layer handles, not something pure logic
-// should do.
+// logic:
+//
+// - WATCHING (also how a "resume watching" action from PAUSED/DROPPED is
+//   requested): re-derives nextEpisodeId/userStatus via deriveActiveProgress
+//   above, rather than blindly echoing back WATCHING. A resume can
+//   correctly land on CAUGHT_UP (every currently-known released episode is
+//   already watched, show still airing) or COMPLETED (same, but the show
+//   has ended/been cancelled), not just WATCHING. This is a deliberate
+//   fix: the previous version of this function always returned literal
+//   WATCHING here, which was wrong for exactly the "resume a series you're
+//   already fully caught up on" case (docs/on-hold-dropped-status-todo.md
+//   Phase 4).
+// - PAUSED/DROPPED: userStatus is set exactly as requested (both are
+//   explicit user intent, never re-derived), and nextEpisodeId is
+//   PRESERVED from currentNextEpisodeId rather than cleared — the value is
+//   still accurate internally (nothing recomputes it while paused/dropped;
+//   episode-release-refresh's TRACKED_USER_STATUSES already excludes both),
+//   it's just not surfaced in active Continue Watching presentation (that
+//   exclusion is Watch Next's own userStatus=WATCHING filter, not a
+//   nextEpisodeId concern) — see docs/on-hold-dropped-status-todo.md Phase 5.
+// - WATCHLIST: nextEpisodeId is cleared, unchanged from before — a
+//   watchlisted series is normally not-yet-started, and this task's scope
+//   is PAUSED/DROPPED only.
+//
+// Never touches WatchlistItem — that's a DB side effect the service layer
+// handles, not something pure logic should do.
 export function deriveManualStatusUpdate(input: ManualStatusUpdateInput): ManualStatusUpdateResult {
   if (input.userStatus === UserSeriesStatus.WATCHING) {
-    return {
-      userStatus: UserSeriesStatus.WATCHING,
-      nextEpisodeId: findFirstUnwatchedEpisodeId(input.orderedEpisodes, input.watchedEpisodeIds),
-    };
+    return deriveActiveProgress({
+      orderedEpisodes: input.orderedEpisodes,
+      watchedEpisodeIds: input.watchedEpisodeIds,
+      releaseStatus: input.releaseStatus,
+    });
+  }
+
+  if (input.userStatus === UserSeriesStatus.PAUSED || input.userStatus === UserSeriesStatus.DROPPED) {
+    return { userStatus: input.userStatus, nextEpisodeId: input.currentNextEpisodeId };
   }
 
   return { userStatus: input.userStatus, nextEpisodeId: null };

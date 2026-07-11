@@ -169,3 +169,29 @@ This is deliberately **report-only** — it answers "what would happen," it does
 - No `prisma/schema.prisma` changes in this revision — §9's schema (already applied in an earlier pass) is unchanged; this revision is docs plus the §7a report-preview fields plus the §8 stale-filter correction in `me.service.ts`.
 - No enrichment **apply** step exists or was added — `trakt-enrichment`/`tmdb-enrichment` remain dry-run only, confirmed by the same structural check used throughout this project (no write calls to any app-facing table). §7a's preview fields are computed and reported, never written.
 - No live Trakt/TMDb calls were required to make this revision's changes — the report-preview fields and doc corrections don't depend on calling either API, only on data already fetched by prior/future dry runs.
+
+## 12. `PATCH /series/:seriesId/status` — two bugs found and fixed (2026-07-11)
+
+Full detail in `docs/on-hold-dropped-status-todo.md` (written for a task that set out to "add
+ON_HOLD/DROPPED" and discovered both already existed as `paused`/`dropped`, end to end, except for
+two real bugs in this endpoint and a missing mobile UI). Recorded here too since this is the
+model's own authoritative doc:
+
+1. **Resuming (`userStatus: WATCHING`) used to always write literal `WATCHING`**, even when the
+   correct derived status was `caught_up` or `completed` (e.g. resuming a `paused` series that's
+   already watched everything currently known, on a still-`returning` show, incorrectly became
+   `watching` instead of `caught_up`). Fixed: the `WATCHING` branch now runs the exact same
+   `deriveUserStatusFromNextEpisode` §6 uses, instead of hardcoding `WATCHING`.
+2. **Pausing/dropping used to null `nextEpisodeId`** instead of preserving it, contrary to this
+   task's own principle of not throwing away a value the app already had correctly computed.
+   Fixed: `paused`/`dropped` now carry the row's existing `nextEpisodeId` forward unchanged, so a
+   later resume is immediate and correct without needing a fresh recompute.
+
+Both were pure logic bugs in `series-query-helpers.ts::deriveManualStatusUpdate` — no schema
+change, no data migration, no change to watch-history safety (already correct, verified
+end-to-end against a `paused`↔`dropped`↔`watching` round trip on real dev-DB series, including a
+real 53-row `dropped` cohort from the original TV Time import).
+
+A mobile-side status-actions menu (`SeriesDetailScreen`, `src/utils/seriesStatusActions.ts`) now
+also exists, so `paused`/`dropped` are reachable from the app for the first time — previously the
+endpoint existed but nothing in the client called it.

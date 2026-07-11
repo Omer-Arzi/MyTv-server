@@ -7,6 +7,7 @@ import {
   OrderedEpisodeForNextLookup,
   RawEpisodeForGrouping,
 } from '../series-query-helpers';
+import { ManualUserStatus } from '../dto/update-series-status.dto';
 
 // Fixed, unambiguously-past/future reference dates rather than relying on
 // the real current time — keeps these tests deterministic regardless of
@@ -181,47 +182,108 @@ describe('findFirstUnwatchedEpisodeId', () => {
 });
 
 describe('deriveManualStatusUpdate — status update rules', () => {
-  it('WATCHING re-derives nextEpisodeId as the first unwatched episode', () => {
-    const result = deriveManualStatusUpdate({
-      userStatus: UserSeriesStatus.WATCHING,
-      orderedEpisodes: [nextEp('e1'), nextEp('e2'), nextEp('e3')],
-      watchedEpisodeIds: new Set(['e1']),
-    });
+  // Default input for tests that don't care about releaseStatus/
+  // currentNextEpisodeId, spread-overridden per test. userStatus is a
+  // required positional arg (not part of the partial) so TS still narrows
+  // it to ManualUserStatus rather than widening to `| undefined`.
+  function baseInput(
+    userStatus: ManualUserStatus,
+    overrides: Partial<Omit<Parameters<typeof deriveManualStatusUpdate>[0], 'userStatus'>> = {},
+  ): Parameters<typeof deriveManualStatusUpdate>[0] {
+    return {
+      userStatus,
+      orderedEpisodes: [],
+      watchedEpisodeIds: new Set<string>(),
+      releaseStatus: ReleaseStatus.RETURNING,
+      currentNextEpisodeId: null,
+      ...overrides,
+    };
+  }
+
+  it('WATCHING re-derives nextEpisodeId as the first unwatched episode, and userStatus stays WATCHING when one exists', () => {
+    const result = deriveManualStatusUpdate(
+      baseInput(UserSeriesStatus.WATCHING, {
+        orderedEpisodes: [nextEp('e1'), nextEp('e2'), nextEp('e3')],
+        watchedEpisodeIds: new Set(['e1']),
+      }),
+    );
     expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 'e2' });
   });
 
-  it('WATCHING comes back with a null nextEpisodeId when everything currently known is watched', () => {
-    const result = deriveManualStatusUpdate({
-      userStatus: UserSeriesStatus.WATCHING,
-      orderedEpisodes: [nextEp('e1'), nextEp('e2')],
-      watchedEpisodeIds: new Set(['e1', 'e2']),
-    });
-    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: null });
-  });
-
-  it('WATCHING comes back with a null nextEpisodeId when there is no episode catalog at all', () => {
-    const result = deriveManualStatusUpdate({ userStatus: UserSeriesStatus.WATCHING, orderedEpisodes: [], watchedEpisodeIds: new Set() });
-    expect(result.nextEpisodeId).toBeNull();
-  });
-
-  it('WATCHING comes back with a null nextEpisodeId when the only unwatched episode is unreleased', () => {
-    const result = deriveManualStatusUpdate({
-      userStatus: UserSeriesStatus.WATCHING,
-      orderedEpisodes: [nextEp('e1'), nextEp('e2', FUTURE)],
-      watchedEpisodeIds: new Set(['e1']),
-    });
-    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: null });
-  });
-
-  it.each([UserSeriesStatus.PAUSED, UserSeriesStatus.DROPPED, UserSeriesStatus.WATCHLIST])(
-    '%s always clears nextEpisodeId, even if an unwatched episode is available',
-    (userStatus) => {
-      const result = deriveManualStatusUpdate({
-        userStatus,
+  // Regression test for the bug found in docs/on-hold-dropped-status-todo.md
+  // Phase 4: resuming a series that's fully caught up used to always come
+  // back as WATCHING regardless of whether CAUGHT_UP/COMPLETED was the
+  // actually-correct derived status.
+  it('WATCHING with everything currently known already watched derives CAUGHT_UP for a still-airing series (not blindly WATCHING)', () => {
+    const result = deriveManualStatusUpdate(
+      baseInput(UserSeriesStatus.WATCHING, {
         orderedEpisodes: [nextEp('e1'), nextEp('e2')],
-        watchedEpisodeIds: new Set(),
-      });
+        watchedEpisodeIds: new Set(['e1', 'e2']),
+        releaseStatus: ReleaseStatus.RETURNING,
+      }),
+    );
+    expect(result).toEqual({ userStatus: UserSeriesStatus.CAUGHT_UP, nextEpisodeId: null });
+  });
+
+  it('WATCHING with everything currently known already watched derives COMPLETED for an ended series', () => {
+    const result = deriveManualStatusUpdate(
+      baseInput(UserSeriesStatus.WATCHING, {
+        orderedEpisodes: [nextEp('e1')],
+        watchedEpisodeIds: new Set(['e1']),
+        releaseStatus: ReleaseStatus.ENDED,
+      }),
+    );
+    expect(result).toEqual({ userStatus: UserSeriesStatus.COMPLETED, nextEpisodeId: null });
+  });
+
+  it('WATCHING with an empty episode catalog derives CAUGHT_UP/COMPLETED per releaseStatus, not literal WATCHING', () => {
+    const returning = deriveManualStatusUpdate(baseInput(UserSeriesStatus.WATCHING, { releaseStatus: ReleaseStatus.RETURNING }));
+    expect(returning).toEqual({ userStatus: UserSeriesStatus.CAUGHT_UP, nextEpisodeId: null });
+
+    const cancelled = deriveManualStatusUpdate(baseInput(UserSeriesStatus.WATCHING, { releaseStatus: ReleaseStatus.CANCELLED }));
+    expect(cancelled).toEqual({ userStatus: UserSeriesStatus.COMPLETED, nextEpisodeId: null });
+  });
+
+  it('WATCHING with only an unreleased unwatched episode derives CAUGHT_UP/COMPLETED, not WATCHING (future episode never counts as "next")', () => {
+    const result = deriveManualStatusUpdate(
+      baseInput(UserSeriesStatus.WATCHING, {
+        orderedEpisodes: [nextEp('e1'), nextEp('e2', FUTURE)],
+        watchedEpisodeIds: new Set(['e1']),
+        releaseStatus: ReleaseStatus.RETURNING,
+      }),
+    );
+    expect(result).toEqual({ userStatus: UserSeriesStatus.CAUGHT_UP, nextEpisodeId: null });
+  });
+
+  // Regression tests for the bug found in docs/on-hold-dropped-status-todo.md
+  // Phase 5: pausing/dropping used to always null nextEpisodeId instead of
+  // preserving it.
+  it.each([UserSeriesStatus.PAUSED, UserSeriesStatus.DROPPED])(
+    '%s sets userStatus exactly as requested and PRESERVES the current nextEpisodeId, even if a different episode would be "next" if recomputed',
+    (userStatus) => {
+      const result = deriveManualStatusUpdate(
+        baseInput(userStatus, {
+          orderedEpisodes: [nextEp('e1'), nextEp('e2')],
+          watchedEpisodeIds: new Set(),
+          currentNextEpisodeId: 'e1',
+        }),
+      );
+      expect(result).toEqual({ userStatus, nextEpisodeId: 'e1' });
+    },
+  );
+
+  it.each([UserSeriesStatus.PAUSED, UserSeriesStatus.DROPPED])(
+    '%s preserves a null nextEpisodeId as null (nothing invented)',
+    (userStatus) => {
+      const result = deriveManualStatusUpdate(baseInput(userStatus, { currentNextEpisodeId: null }));
       expect(result).toEqual({ userStatus, nextEpisodeId: null });
     },
   );
+
+  it('WATCHLIST always clears nextEpisodeId, even if a currentNextEpisodeId was passed in', () => {
+    const result = deriveManualStatusUpdate(
+      baseInput(UserSeriesStatus.WATCHLIST, { currentNextEpisodeId: 'e1' }),
+    );
+    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHLIST, nextEpisodeId: null });
+  });
 });

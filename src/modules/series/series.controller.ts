@@ -59,10 +59,13 @@ export class SeriesController {
     summary: 'Manually set my personal status for a series',
     description:
       'Only WATCHING, PAUSED, DROPPED, and WATCHLIST can be set directly — COMPLETED and CAUGHT_UP are always ' +
-      'auto-derived (400 if requested). DROPPED/PAUSED always clear nextEpisodeId. WATCHING re-derives ' +
-      'nextEpisodeId as the first unwatched episode in this user\'s currently-known episode catalog (may come ' +
-      'back null if the catalog is empty or everything currently known is watched). WATCHLIST also ensures a ' +
-      'WatchlistItem exists, so GET /watchlist stays consistent.',
+      'auto-derived (400 if requested). PAUSED/DROPPED preserve nextEpisodeId as-is (not recomputed while paused/ ' +
+      'dropped, but kept accurate for an immediate, correct resume) and never touch watch history. Requesting ' +
+      'WATCHING (also how "resume watching" from PAUSED/DROPPED works) re-derives the true resulting status from ' +
+      'this user\'s currently-known episode catalog — WATCHING if an unwatched released episode exists, else ' +
+      'CAUGHT_UP (series still airing) or COMPLETED (series ended/cancelled); the response userStatus reflects ' +
+      'that derived value, not necessarily WATCHING. WATCHLIST clears nextEpisodeId and ensures a WatchlistItem ' +
+      'exists, so GET /watchlist stays consistent.',
   })
   @ApiParam({ name: 'seriesId', description: 'Series id', example: '3f6b1e2a-8c1d-4b2a-9e2e-111111111111' })
   @ApiBody({ type: UpdateSeriesStatusDto })

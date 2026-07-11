@@ -118,18 +118,25 @@ export class SeriesService {
   // reach here). See docs/status-model-plan.md §4/§7 for why those two
   // stay auto-derived-only.
   async updateStatus(userId: string, seriesId: string, userStatus: ManualUserStatus): Promise<UpdateSeriesStatusResponseDto> {
-    const series = await this.prisma.series.findUnique({ where: { id: seriesId }, select: { id: true } });
+    const series = await this.prisma.series.findUnique({ where: { id: seriesId }, select: { id: true, releaseStatus: true } });
     if (!series) {
       throw new NotFoundException(`Series ${seriesId} not found`);
     }
 
-    // Only fetched when actually needed (WATCHING) — DROPPED/PAUSED/
-    // WATCHLIST never look at the episode catalog, they always clear
-    // nextEpisodeId per deriveManualStatusUpdate. airDate is fetched
-    // alongside id so findFirstUnwatchedEpisodeId can skip a not-yet-aired
-    // episode rather than surfacing it as "next" (src/common/is-episode-released.ts).
+    // Only fetched when actually needed:
+    // - episode catalog + watches: WATCHING only — deriveManualStatusUpdate
+    //   uses these to find the next episode AND (via releaseStatus below)
+    //   correctly derive WATCHING/CAUGHT_UP/COMPLETED rather than blindly
+    //   returning WATCHING. airDate is fetched alongside id so
+    //   findFirstUnwatchedEpisodeId can skip a not-yet-aired episode rather
+    //   than surfacing it as "next" (src/common/is-episode-released.ts).
+    // - the row's current nextEpisodeId: PAUSED/DROPPED only, so it can be
+    //   preserved rather than cleared (see series-query-helpers.ts's
+    //   deriveManualStatusUpdate doc comment).
     let orderedEpisodes: OrderedEpisodeForNextLookup[] = [];
     let watchedEpisodeIds = new Set<string>();
+    let currentNextEpisodeId: string | null = null;
+
     if (userStatus === UserSeriesStatus.WATCHING) {
       const [episodes, watches] = await Promise.all([
         this.prisma.episode.findMany({
@@ -141,9 +148,21 @@ export class SeriesService {
       ]);
       orderedEpisodes = episodes;
       watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
+    } else if (userStatus === UserSeriesStatus.PAUSED || userStatus === UserSeriesStatus.DROPPED) {
+      const existingProgress = await this.prisma.userSeriesProgress.findUnique({
+        where: { userId_seriesId: { userId, seriesId } },
+        select: { nextEpisodeId: true },
+      });
+      currentNextEpisodeId = existingProgress?.nextEpisodeId ?? null;
     }
 
-    const decision = deriveManualStatusUpdate({ userStatus, orderedEpisodes, watchedEpisodeIds });
+    const decision = deriveManualStatusUpdate({
+      userStatus,
+      orderedEpisodes,
+      watchedEpisodeIds,
+      releaseStatus: series.releaseStatus,
+      currentNextEpisodeId,
+    });
 
     const nextEpisode = await this.prisma.$transaction(async (tx) => {
       await tx.userSeriesProgress.upsert({
