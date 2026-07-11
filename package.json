@@ -31,6 +31,8 @@
     "episode-refresh:dry-run": "ts-node episode-release-refresh/run-refresh.ts",
     "episode-refresh:apply-dry-run": "ts-node episode-release-refresh/run-apply-refresh.ts",
     "episode-refresh:apply": "ts-node episode-release-refresh/run-apply-refresh.ts --apply-episode-insert",
+    "progress-reconciliation:dry-run": "ts-node episode-release-refresh/run-progress-reconciliation.ts",
+    "progress-reconciliation:apply": "ts-node episode-release-refresh/run-progress-reconciliation.ts --apply",
     "library-health:report": "ts-node library-health/run-health-report.ts",
     "library-health:incomplete-catalog": "ts-node library-health/run-incomplete-catalog-investigation.ts",
     "library-health:missing-provider-candidates": "ts-node library-health/run-missing-provider-candidates.ts",
