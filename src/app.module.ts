@@ -10,6 +10,7 @@ import { EpisodesModule } from './modules/episodes/episodes.module';
 import { SeriesModule } from './modules/series/series.module';
 import { MigrationWorkbenchModule } from './modules/migration-workbench/migration-workbench.module';
 import { SyncSchedulerModule } from './modules/sync-scheduler/sync-scheduler.module';
+import { SearchModule } from './modules/search/search.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { SyncSchedulerModule } from './modules/sync-scheduler/sync-scheduler.mod
     SeriesModule,
     MigrationWorkbenchModule,
     SyncSchedulerModule,
+    SearchModule,
   ],
 })
 export class AppModule implements NestModule {

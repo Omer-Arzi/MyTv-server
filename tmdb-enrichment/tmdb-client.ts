@@ -70,10 +70,13 @@ export class TmdbClient {
 
   // first_air_date_year narrows server-side when a year hint is known —
   // the one place TMDb search can do less client-side filtering than Trakt's
-  // (docs/tmdb-enrichment-plan.md §2/§3.1).
-  async searchTv(query: string, year?: number | null): Promise<TmdbTvSearchResult[]> {
+  // (docs/tmdb-enrichment-plan.md §2/§3.1). `page` is additive (added for
+  // the Search feature's "load more" pagination) — omitted, this is
+  // identical to every pre-existing caller's single-page behavior.
+  async searchTv(query: string, year?: number | null, page?: number): Promise<TmdbTvSearchResult[]> {
     const params: Record<string, string> = { query };
     if (year) params.first_air_date_year = String(year);
+    if (page && page > 1) params.page = String(page);
     const response = await this.request<{ results: TmdbTvSearchResult[] }>('/search/tv', params);
     return response.results;
   }
