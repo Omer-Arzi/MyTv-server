@@ -91,6 +91,50 @@ model Series {
   ratings        SeriesRating[]
   migrationHistory  MigrationHistory[]
   providerDecisions ProviderIdentityDecision[]
+  syncStatus        SeriesSyncStatus?
+}
+
+// Persistent catalog-sync metadata for the automatic episode-release-refresh
+// scheduler (src/modules/sync-scheduler). Deliberately its own table rather
+// than columns on Series — this is operational bookkeeping about *when we
+// last checked the provider*, not series data itself, and keeping it
+// separate means every other Series read in the app never has to select
+// around scheduler-only columns. One row per series (not per user/series):
+// catalog freshness is a series-level concern independent of which user(s)
+// track it, matching Part 3 of the scheduler architecture task — refresh
+// frequency is decided per the series' local UserSeriesProgress statuses at
+// tick time, not stored here.
+model SeriesSyncStatus {
+  id       String @id @default(uuid())
+  seriesId String @unique
+  series   Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  // Set at the end of every attempt, success or failure alike.
+  lastEpisodeRefreshAt     DateTime?
+  lastEpisodeRefreshStatus String? // 'SUCCESS' | 'FAILURE' | 'BLOCKED_MANUAL_REVIEW'
+  lastEpisodeRefreshError  String?
+  // Set only on a genuinely successful attempt — distinct from
+  // lastEpisodeRefreshAt so "last time we tried" and "last time it actually
+  // worked" can be told apart at a glance.
+  lastSuccessfulRefreshAt DateTime?
+  // Set whenever the provider was actually called, even if the call itself
+  // failed — distinct from lastEpisodeRefreshAt, which also covers
+  // skip-without-calling-the-provider outcomes (e.g. not yet due).
+  lastProviderCheckAt DateTime?
+  // Consecutive failure count, reset to 0 on any success. Drives the
+  // exponential backoff in sync-frequency-policy.ts's
+  // computeNextEligibleRefreshAt.
+  numberOfFailures Int @default(0)
+  lastSyncDurationMs Int?
+
+  // Denormalized so the scheduler's due-series query doesn't have to
+  // recompute every series' interval from scratch on every tick — set to
+  // (attempt time + policy interval, or backoff delay after a failure).
+  nextEligibleRefreshAt DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@index([nextEligibleRefreshAt])
 }
 
 model Season {

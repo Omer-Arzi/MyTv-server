@@ -200,11 +200,27 @@ export interface ShouldForceWatchingForPendingNextEpisodeInput {
   // informed human decision that must win even if it means a large new
   // batch of episodes sits "hidden" under e.g. an explicit COMPLETED.
   explicitStatusOverrideGiven: boolean;
+  // Whether this series has ANY locally-watched episode at all (matched or
+  // orphaned — any watch history counts). This correction exists to fix a
+  // series the user was already engaged with (WATCHING/CAUGHT_UP/COMPLETED)
+  // whose "something new to watch" fact got lost because catalog creation
+  // post-dates status resolution — see the file-level comment above. A
+  // series with zero watch history (WATCHLIST's "haven't started yet", or a
+  // fresh UNKNOWN) is never "something new to watch" — it's the ordinary,
+  // still-unstarted state, and having a next episode is true of virtually
+  // every such series by definition. Forcing WATCHING here would silently
+  // promote every unstarted WATCHLIST series to "watching" the moment its
+  // identity gets confirmed, which is exactly the same class of mistake
+  // proposeUserStatusAfterEnrichment (derive-user-status.ts) already guards
+  // against for the sibling Trakt/TMDb enrichment flow — same rule, applied
+  // here too.
+  hasAnyWatchedEpisode: boolean;
 }
 
 export function shouldForceWatchingForPendingNextEpisode(input: ShouldForceWatchingForPendingNextEpisodeInput): boolean {
   if (!input.hasProposedNextEpisode) return false;
   if (isProtectedMigrationStatus(input.liveUserStatus)) return false;
   if (input.explicitStatusOverrideGiven) return false;
+  if (!input.hasAnyWatchedEpisode) return false;
   return true;
 }

@@ -75,7 +75,7 @@ describe('validateFriendsTvmazeApply', () => {
     // Sanity: this exercises the risk-list gate itself, independent of the
     // title-equality gate above (both would fire together for a real
     // mismatch, but this confirms the risk-list check runs at all).
-    const result = validateFriendsTvmazeApply({ ...validGuardInput(), localTitle: 'Jujutsu Kaisen' });
+    const result = validateFriendsTvmazeApply({ ...validGuardInput(), localTitle: 'Rurouni Kenshin' });
     expect(result.allowed).toBe(false);
     expect(result.violations.some((v) => v.includes('risk list'))).toBe(true);
   });

@@ -16,21 +16,39 @@ import { isCanonicalSeason } from '../src/modules/series/series-query-helpers';
 
 // --- Candidate eligibility ------------------------------------------------
 
-export type SeriesSkipReason = 'user-status-not-tracked' | 'no-tmdb-id' | 'risk-list';
+export type SeriesSkipReason = 'user-status-unknown' | 'no-tmdb-id' | 'risk-list';
 
-// WATCHING/CAUGHT_UP/COMPLETED are all "actively relevant" for Phase 1 apply
-// — a COMPLETED series can still receive a genuine renewal (a new released
-// episode after the provider previously showed nothing left), and that's
-// exactly the case Phase 1 apply exists to catch. DROPPED/PAUSED/WATCHLIST
-// have explicit personal intent this job must never disturb (excluded from
-// candidate selection entirely, not just protected once selected — same
-// stricter-than-watch-all posture docs/episode-release-refresh-strategy.md
-// §2.4 calls for), and UNKNOWN has no "next episode" concept that applies.
-// Exported (not just module-private) so apply-refresh-writes.ts's live
-// write-time eligibility re-check can reuse the exact same list rather
-// than maintaining its own — the two checks (candidate-selection-time and
-// write-time) must never be able to silently drift apart.
+// WATCHING/CAUGHT_UP/COMPLETED are the statuses whose nextEpisodeId/userStatus
+// a refresh is allowed to actively recompute — see decideProgressRecompute
+// (apply-refresh-writes.ts) and reconcileSeriesProgress
+// (progress-reconciliation-logic.ts), which both still gate on this list.
+// This is now a STATUS-LOGIC concept only ("what should happen to progress
+// after the catalog changes"), not a catalog-eligibility one — see
+// isCatalogEligibleStatus below for that separate question. Exported so
+// those two "what to do with progress" call sites keep sharing one
+// definition rather than drifting apart, same as before.
+//
+// Catalog freshness (checkSeriesEligibility, checkLiveWriteEligibility) no
+// longer consults this list at all: a WATCHLIST/PAUSED/DROPPED series still
+// gets its catalog refreshed on its own cadence (see sync-frequency-policy.ts)
+// — that refresh just never touches nextEpisodeId/userStatus, because THIS
+// list still excludes those statuses from the recompute step specifically.
 export const TRACKED_USER_STATUSES: UserSeriesStatus[] = [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP, UserSeriesStatus.COMPLETED];
+
+// The only userStatus this pipeline now excludes from catalog eligibility
+// at all. UNKNOWN means the user has no meaningful relationship to this
+// series yet (never added it to any list) — there's no sync-frequency-policy.ts
+// interval defined for it, and nothing meaningful to keep "fresh" for a
+// series nobody has expressed any interest in tracking. Every other status
+// (WATCHING, CAUGHT_UP, WATCHLIST, PAUSED, DROPPED, COMPLETED) is catalog-eligible
+// — explicit personal intent (DROPPED/PAUSED/WATCHLIST) still protects
+// nextEpisodeId/userStatus via TRACKED_USER_STATUSES above, but no longer
+// blocks the catalog itself from staying up to date. This is the crux of
+// the catalog-freshness / status-logic separation the scheduler
+// architecture requires.
+export function isCatalogEligibleStatus(status: UserSeriesStatus): boolean {
+  return status !== UserSeriesStatus.UNKNOWN;
+}
 
 // Deliberately NOT gating on Series.releaseStatus (ENDED/CANCELLED) here,
 // even though that would be a cheap way to skip an obviously-finished
@@ -59,13 +77,15 @@ export interface SeriesEligibilityResult {
 }
 
 // Checked in this exact order because it's also the report's implied
-// priority: "not tracked" is the most common/expected reason (most series
-// aren't being actively watched), so it's worth surfacing first rather
-// than after a wasted risk-list check. No releaseStatus check here at all
-// — see the comment on TRACKED_USER_STATUSES above for why.
+// priority: "status unknown" is worth surfacing before a wasted risk-list
+// check. No releaseStatus check here at all — see the comment on
+// TRACKED_USER_STATUSES above for why. This is now a pure CATALOG-eligibility
+// check — it says nothing about whether a refresh may touch
+// nextEpisodeId/userStatus (that's decideProgressRecompute/reconcileSeriesProgress's
+// job, gated on TRACKED_USER_STATUSES separately, at write time).
 export function checkSeriesEligibility(input: SeriesEligibilityInput): SeriesEligibilityResult {
-  if (!TRACKED_USER_STATUSES.includes(input.userStatus)) {
-    return { eligible: false, reason: 'user-status-not-tracked' };
+  if (!isCatalogEligibleStatus(input.userStatus)) {
+    return { eligible: false, reason: 'user-status-unknown' };
   }
   if (!input.tmdbId) {
     return { eligible: false, reason: 'no-tmdb-id' };

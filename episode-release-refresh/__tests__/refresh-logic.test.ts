@@ -57,19 +57,26 @@ describe('checkSeriesEligibility', () => {
     expect(checkSeriesEligibility({ ...base, userStatus: UserSeriesStatus.COMPLETED }).eligible).toBe(true);
   });
 
-  it.each([UserSeriesStatus.DROPPED, UserSeriesStatus.PAUSED, UserSeriesStatus.WATCHLIST, UserSeriesStatus.UNKNOWN])(
-    'excludes %s with reason user-status-not-tracked',
-    (userStatus) => {
-      expect(checkSeriesEligibility({ ...base, userStatus })).toEqual({ eligible: false, reason: 'user-status-not-tracked' });
-    },
-  );
+  // Catalog freshness is now independent of user status (Part 3 of the
+  // scheduler-architecture task) — DROPPED/PAUSED/WATCHLIST still get their
+  // catalog refreshed (on their own, slower cadence — see
+  // sync-frequency-policy.ts), they just never have nextEpisodeId/userStatus
+  // touched by it (TRACKED_USER_STATUSES, enforced separately at write
+  // time by decideProgressRecompute/reconcileSeriesProgress).
+  it.each([UserSeriesStatus.DROPPED, UserSeriesStatus.PAUSED, UserSeriesStatus.WATCHLIST])('allows %s catalog eligibility (status logic is a separate, later gate)', (userStatus) => {
+    expect(checkSeriesEligibility({ ...base, userStatus }).eligible).toBe(true);
+  });
+
+  it('excludes UNKNOWN with reason user-status-unknown — the one status with no defined sync policy', () => {
+    expect(checkSeriesEligibility({ ...base, userStatus: UserSeriesStatus.UNKNOWN })).toEqual({ eligible: false, reason: 'user-status-unknown' });
+  });
 
   it('excludes a series with no tmdbId', () => {
     expect(checkSeriesEligibility({ ...base, tmdbId: null })).toEqual({ eligible: false, reason: 'no-tmdb-id' });
   });
 
   it('excludes a title on the episode-numbering risk list', () => {
-    expect(checkSeriesEligibility({ ...base, title: 'Jujutsu Kaisen' })).toEqual({ eligible: false, reason: 'risk-list' });
+    expect(checkSeriesEligibility({ ...base, title: 'Rurouni Kenshin' })).toEqual({ eligible: false, reason: 'risk-list' });
   });
 
   it('excludes a title on the known season-shift orphan list', () => {
@@ -95,9 +102,9 @@ describe('checkSeriesEligibility', () => {
   // eligibility test above is exactly the case that would break if this
   // gate were ever reintroduced.
   it('checks user-status before tmdbId/risk-list (priority order)', () => {
-    expect(checkSeriesEligibility({ userStatus: UserSeriesStatus.DROPPED, tmdbId: null, title: 'Jujutsu Kaisen' })).toEqual({
+    expect(checkSeriesEligibility({ userStatus: UserSeriesStatus.UNKNOWN, tmdbId: null, title: 'Rurouni Kenshin' })).toEqual({
       eligible: false,
-      reason: 'user-status-not-tracked',
+      reason: 'user-status-unknown',
     });
   });
 });

@@ -103,7 +103,7 @@ describe('classifySeriesHealth — provider structure risk', () => {
   const activeProgress = { userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: null, lastWatchedAt: PAST };
 
   it('classifies a manually-curated risk-list title as PROVIDER_STRUCTURE_RISK with the anime-numbering action', () => {
-    const result = classifySeriesHealth(baseInput({ title: 'Jujutsu Kaisen', progress: activeProgress }));
+    const result = classifySeriesHealth(baseInput({ title: 'Rurouni Kenshin', progress: activeProgress }));
     expect(result.classification).toBe('PROVIDER_STRUCTURE_RISK');
     expect(result.recommendedNextAction).toBe('NEEDS_ABSOLUTE_NUMBERING_PROVIDER');
     expect(result.riskFlags).toContain('RISK_LISTED_EPISODE_NUMBERING');

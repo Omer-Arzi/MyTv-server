@@ -188,6 +188,11 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
   }
 
   const local = healthInputs.find((s) => s.title === decision.title);
+  // Any locally-watched episode at all (not just provider-matched ones) —
+  // used to gate shouldForceWatchingForPendingNextEpisode below, so a
+  // never-started series never gets force-promoted to WATCHING just for
+  // having an (unstarted, by definition) next episode.
+  const hasAnyWatchedLocalEpisode = local ? local.episodes.some((e) => e.watched) : false;
   if (!local) {
     return {
       kind: 'local-not-found',
@@ -433,7 +438,14 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
     const hasProposedNextEpisode = comparison.proposedNextEpisodeLabel !== null;
     const explicitStatusOverrideGiven = migrationIntent && decision.statusOverride !== undefined;
     let pendingNewNextEpisodeCreation = false;
-    if (shouldForceWatchingForPendingNextEpisode({ hasProposedNextEpisode, liveUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN, explicitStatusOverrideGiven })) {
+    if (
+      shouldForceWatchingForPendingNextEpisode({
+        hasProposedNextEpisode,
+        liveUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
+        explicitStatusOverrideGiven,
+        hasAnyWatchedEpisode: hasAnyWatchedLocalEpisode,
+      })
+    ) {
       unifiedResolvedUserStatus = UserSeriesStatus.WATCHING;
       unifiedStatusSource = 'derived';
       if (comparison.proposedNextEpisodeIsNew) {
@@ -610,7 +622,14 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
         finalNextEpisodeId = unifiedResolvedNextEpisodeId;
       }
 
-      if (shouldForceWatchingForPendingNextEpisode({ hasProposedNextEpisode, liveUserStatus: liveStatus, explicitStatusOverrideGiven })) {
+      if (
+        shouldForceWatchingForPendingNextEpisode({
+          hasProposedNextEpisode,
+          liveUserStatus: liveStatus,
+          explicitStatusOverrideGiven,
+          hasAnyWatchedEpisode: hasAnyWatchedLocalEpisode,
+        })
+      ) {
         finalStatus = UserSeriesStatus.WATCHING;
         if (comparison.proposedNextEpisodeIsNew && comparison.proposedNextSeasonNumber !== null && comparison.proposedNextEpisodeNumber !== null) {
           const createdNext = await tx.episode.findFirst({

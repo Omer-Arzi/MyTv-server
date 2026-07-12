@@ -71,7 +71,7 @@ export interface RefreshReport {
   };
 }
 
-const ALL_SKIP_REASONS: SeriesSkipReason[] = ['user-status-not-tracked', 'no-tmdb-id', 'risk-list'];
+const ALL_SKIP_REASONS: SeriesSkipReason[] = ['user-status-unknown', 'no-tmdb-id', 'risk-list'];
 
 export function buildRefreshReport(input: {
   generatedAt: Date;

@@ -233,19 +233,17 @@ describeIfDbConfigured('applySeriesInsertPlan (integration, real Postgres)', () 
     expect(existing.id).toBeTruthy();
   });
 
-  // Fix #2: the live eligibility gate must guard EVERY write (season,
-  // episode, AND progress) — not just the progress recompute. A series
-  // that's raced to a protected status between candidate selection and
-  // this transaction must receive zero writes of any kind.
-  it('performs zero Season/Episode/Progress writes when the live userStatus has raced to a protected status', async () => {
+  // The live eligibility gate must guard EVERY write (season, episode, AND
+  // progress) when the live status is UNKNOWN — the one status with no
+  // defined sync policy at all (see isCatalogEligibleStatus,
+  // refresh-logic.ts). A series that's raced to UNKNOWN between candidate
+  // selection and this transaction must receive zero writes of any kind.
+  it('performs zero Season/Episode/Progress writes when the live userStatus has raced to UNKNOWN', async () => {
     const user = await createFixtureUser();
     const series = await createFixtureSeries();
     const season1 = await prisma.season.create({ data: { seriesId: series.id, seasonNumber: 1 } });
     await prisma.episode.create({ data: { seasonId: season1.id, episodeNumber: 1, airDate: PAST } });
-    // Live status is DROPPED at write time — simulates the user dropping
-    // the series between candidate selection (which would have required a
-    // tracked status) and this transaction running.
-    await prisma.userSeriesProgress.create({ data: { userId: user.id, seriesId: series.id, userStatus: UserSeriesStatus.DROPPED, nextEpisodeId: null } });
+    await prisma.userSeriesProgress.create({ data: { userId: user.id, seriesId: series.id, userStatus: UserSeriesStatus.UNKNOWN, nextEpisodeId: null } });
 
     const insertPlan: EpisodeInsertPlan = {
       episodesToInsert: [{ seasonNumber: 2, episodeNumber: 1, title: 'New Episode', overview: null, airDate: NEW_RELEASED, imageUrl: null, runtimeMinutes: null }],
@@ -254,7 +252,7 @@ describeIfDbConfigured('applySeriesInsertPlan (integration, real Postgres)', () 
 
     const result = await applySeriesInsertPlan(prisma, { userId: user.id, seriesId: series.id, insertPlan });
 
-    expect(result.writeSkippedReason).toContain('DROPPED');
+    expect(result.writeSkippedReason).toContain('UNKNOWN');
     expect(result.episodesInserted).toBe(0);
     expect(result.seasonsCreated).toEqual([]);
     expect(result.duplicatesSkipped).toBe(0);
@@ -262,7 +260,7 @@ describeIfDbConfigured('applySeriesInsertPlan (integration, real Postgres)', () 
     expect(result.progressChange).toBeNull();
 
     const progress = await prisma.userSeriesProgress.findUniqueOrThrow({ where: { userId_seriesId: { userId: user.id, seriesId: series.id } } });
-    expect(progress.userStatus).toBe(UserSeriesStatus.DROPPED); // left exactly as-is
+    expect(progress.userStatus).toBe(UserSeriesStatus.UNKNOWN); // left exactly as-is
     expect(progress.nextEpisodeId).toBeNull();
 
     // Zero Season writes — the brand-new season 2 this plan asked for was
@@ -275,6 +273,43 @@ describeIfDbConfigured('applySeriesInsertPlan (integration, real Postgres)', () 
     expect(seasonCount).toBe(1); // only the original season1 fixture
     const episodeCount = await prisma.episode.count({ where: { season: { seriesId: series.id } } });
     expect(episodeCount).toBe(1); // only the original ep1 fixture
+  });
+
+  // Part 3 of the scheduler-architecture task, proven at the transaction
+  // level: a DROPPED series' catalog IS still written to (episodes/seasons
+  // inserted), but its nextEpisodeId/userStatus are left completely
+  // untouched — catalog freshness and status logic are independent. Same
+  // shape applies to PAUSED/WATCHLIST (all excluded only from
+  // TRACKED_USER_STATUSES, not from isCatalogEligibleStatus).
+  it('inserts new episodes for a DROPPED series but leaves userStatus/nextEpisodeId completely untouched', async () => {
+    const user = await createFixtureUser();
+    const series = await createFixtureSeries();
+    const season1 = await prisma.season.create({ data: { seriesId: series.id, seasonNumber: 1 } });
+    await prisma.episode.create({ data: { seasonId: season1.id, episodeNumber: 1, airDate: PAST } });
+    await prisma.userSeriesProgress.create({ data: { userId: user.id, seriesId: series.id, userStatus: UserSeriesStatus.DROPPED, nextEpisodeId: null } });
+
+    const insertPlan: EpisodeInsertPlan = {
+      episodesToInsert: [{ seasonNumber: 2, episodeNumber: 1, title: 'New Episode', overview: null, airDate: NEW_RELEASED, imageUrl: null, runtimeMinutes: null }],
+      seasonNumbersToCreate: [2],
+    };
+
+    const result = await applySeriesInsertPlan(prisma, { userId: user.id, seriesId: series.id, insertPlan });
+
+    expect(result.writeSkippedReason).toBeNull();
+    expect(result.episodesInserted).toBe(1);
+    expect(result.seasonsCreated).toEqual([2]);
+    expect(result.progressRecomputed).toBe(false);
+    expect(result.progressChange).toBeNull();
+    expect(result.progressSkippedReason).toContain('DROPPED');
+
+    const season2 = await prisma.season.findUnique({ where: { seriesId_seasonNumber: { seriesId: series.id, seasonNumber: 2 } } });
+    expect(season2).not.toBeNull();
+    const insertedEpisode = await prisma.episode.findUnique({ where: { seasonId_episodeNumber: { seasonId: season2!.id, episodeNumber: 1 } } });
+    expect(insertedEpisode).not.toBeNull();
+
+    const progress = await prisma.userSeriesProgress.findUniqueOrThrow({ where: { userId_seriesId: { userId: user.id, seriesId: series.id } } });
+    expect(progress.userStatus).toBe(UserSeriesStatus.DROPPED); // untouched
+    expect(progress.nextEpisodeId).toBeNull(); // untouched
   });
 
   // Fix #3: a missing UserSeriesProgress row (e.g. removed from tracking

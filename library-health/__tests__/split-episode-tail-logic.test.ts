@@ -99,7 +99,7 @@ describe('checkSplitEpisodeTailOnly', () => {
 
   it('is never triggered by a known risk-listed title, regardless of pattern', () => {
     const result = checkSplitEpisodeTailOnly({
-      localTitle: 'Jujutsu Kaisen',
+      localTitle: 'Rurouni Kenshin',
       localEpisodes: officeSeason4Local(),
       providerEpisodes: officeSeason4Provider(),
       orphanedWatchedEpisodes: officeSeason4TailOrphans(),

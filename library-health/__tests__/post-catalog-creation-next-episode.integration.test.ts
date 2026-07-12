@@ -87,6 +87,7 @@ describeIfDbConfigured('post-catalog-creation next-episode resolution (integrati
       hasProposedNextEpisode,
       liveUserStatus: UserSeriesStatus.WATCHING,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(shouldCorrect).toBe(true);
 

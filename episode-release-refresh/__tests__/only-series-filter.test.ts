@@ -53,22 +53,23 @@ describe('filterToOnlySeries', () => {
 
 describe('filterToOnlySeries composed with checkSeriesEligibility (the full pre-fetch decision chain)', () => {
   const ALL = [
-    series({ id: 'dropped-series', userStatus: UserSeriesStatus.DROPPED }),
+    series({ id: 'unknown-series', userStatus: UserSeriesStatus.UNKNOWN }),
     series({ id: 'watching-series', userStatus: UserSeriesStatus.WATCHING }),
   ];
 
-  // A protected-status series found by --only must still end up with zero
+  // The one status found by --only that must still end up with zero
   // downstream processing — found:true, but excluded before any TMDb
-  // fetch, exactly like the ordinary (non---only) eligibility loop already
-  // does for every other DROPPED/PAUSED/WATCHLIST/UNKNOWN series.
-  it('finds a protected-status series but excludes it from the eligible set — zero writes downstream', () => {
-    const filtered = filterToOnlySeries(ALL, 'dropped-series');
+  // fetch. DROPPED/PAUSED/WATCHLIST are catalog-eligible now (Part 3 of
+  // the scheduler-architecture task) — only UNKNOWN has no defined sync
+  // policy at all.
+  it('finds an UNKNOWN-status series but excludes it from the eligible set — zero writes downstream', () => {
+    const filtered = filterToOnlySeries(ALL, 'unknown-series');
     expect(filtered.found).toBe(true);
     expect(filtered.candidateSeries).toHaveLength(1);
 
     const eligibility = checkSeriesEligibility(filtered.candidateSeries[0]);
     expect(eligibility.eligible).toBe(false);
-    expect(eligibility.reason).toBe('user-status-not-tracked');
+    expect(eligibility.reason).toBe('user-status-unknown');
   });
 
   it('finds and passes eligibility for a genuinely trackable series', () => {

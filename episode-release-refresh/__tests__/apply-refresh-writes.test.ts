@@ -2,20 +2,28 @@ import { UserSeriesStatus } from '@prisma/client';
 import { checkLiveWriteEligibility, decideProgressRecompute } from '../apply-refresh-writes';
 
 describe('checkLiveWriteEligibility', () => {
-  it('is eligible for WATCHING/CAUGHT_UP/COMPLETED', () => {
-    for (const userStatus of [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP, UserSeriesStatus.COMPLETED]) {
+  // Catalog writes (Season/Episode insert) are no longer gated by
+  // TRACKED_USER_STATUSES — a WATCHLIST/PAUSED/DROPPED/COMPLETED series is
+  // just as eligible to have its catalog written to as WATCHING/CAUGHT_UP.
+  // Only UNKNOWN (no defined sync policy at all) is excluded.
+  it('is eligible for every status except UNKNOWN', () => {
+    for (const userStatus of [
+      UserSeriesStatus.WATCHING,
+      UserSeriesStatus.CAUGHT_UP,
+      UserSeriesStatus.COMPLETED,
+      UserSeriesStatus.WATCHLIST,
+      UserSeriesStatus.PAUSED,
+      UserSeriesStatus.DROPPED,
+    ]) {
       expect(checkLiveWriteEligibility({ userStatus })).toEqual({ eligible: true, reason: null });
     }
   });
 
-  it.each([UserSeriesStatus.DROPPED, UserSeriesStatus.PAUSED, UserSeriesStatus.WATCHLIST, UserSeriesStatus.UNKNOWN])(
-    'is not eligible for live status %s',
-    (userStatus) => {
-      const result = checkLiveWriteEligibility({ userStatus });
-      expect(result.eligible).toBe(false);
-      expect(result.reason).toContain(userStatus);
-    },
-  );
+  it('is not eligible for live status UNKNOWN', () => {
+    const result = checkLiveWriteEligibility({ userStatus: UserSeriesStatus.UNKNOWN });
+    expect(result.eligible).toBe(false);
+    expect(result.reason).toContain(UserSeriesStatus.UNKNOWN);
+  });
 
   it('is not eligible when no live progress row exists at all', () => {
     const result = checkLiveWriteEligibility(null);

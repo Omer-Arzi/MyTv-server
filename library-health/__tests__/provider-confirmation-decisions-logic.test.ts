@@ -175,7 +175,7 @@ describe('classifyProviderConfirmationDryRun', () => {
 
   it('remains BLOCKED_RISK for a known risk-listed title even with an otherwise-benign single season-0 orphan', () => {
     const seasonZeroOrphanCheck: SeasonZeroOrphanCheckResult = checkBenignSeasonZeroOrphan({
-      localTitle: 'Jujutsu Kaisen',
+      localTitle: 'Rurouni Kenshin',
       orphanedWatchedEpisodes: [{ id: 'x', seasonNumber: 0, episodeNumber: 1 }],
       realSeasonShrinkDetected: false,
     });

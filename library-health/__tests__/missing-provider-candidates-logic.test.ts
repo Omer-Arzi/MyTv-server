@@ -38,7 +38,7 @@ describe('classifyMissingProviderSeries — safety net: local risk-listed title'
   it('classifies PROVIDER_STRUCTURE_RISK regardless of any candidate data', () => {
     const result = classifyMissingProviderSeries(
       baseInput({
-        localTitle: 'Jujutsu Kaisen',
+        localTitle: 'Rurouni Kenshin',
         candidates: [candidate({ tmdbId: 'a', providerSeasonShape: buildSeasonShape([12, 12]), seasonStructureScore: 100 })],
       }),
     );

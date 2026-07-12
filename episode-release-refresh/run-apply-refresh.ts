@@ -32,18 +32,12 @@
 
 import 'dotenv/config';
 import path from 'path';
-import { PrismaClient, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
-import { MAX_APPEND_TO_RESPONSE_ITEMS, TmdbClient, TmdbRequestError } from '../tmdb-enrichment/tmdb-client';
-import { getAppendedSeason, TmdbSeason } from '../tmdb-enrichment/tmdb-types';
-import { mapTmdbStatusToReleaseStatus } from '../tmdb-enrichment/release-status-mapping';
+import { PrismaClient } from '@prisma/client';
+import { TmdbClient } from '../tmdb-enrichment/tmdb-client';
 import { DEV_USER_ID } from '../src/common/constants';
-import { checkSeriesEligibility, chunkArray, compareSeriesCatalog, LocalEpisodeInput, ProviderEpisodeInput } from './refresh-logic';
-import { buildEpisodeInsertPlan, previewEpisodeInsertCounts } from './build-episode-insert-plan';
-import { applySeriesInsertPlan } from './apply-refresh-transaction';
-import { applyProgressReconciliation } from './apply-progress-reconciliation';
-import { reconcileSeriesProgress } from './progress-reconciliation-logic';
-import { OrderedEpisodeForNextLookup } from '../src/modules/series/series-query-helpers';
+import { checkSeriesEligibility } from './refresh-logic';
 import { filterToOnlySeries } from './only-series-filter';
+import { refreshOneSeries, SeriesRow } from './refresh-one-series';
 import {
   ApplyProcessedSeriesEntry,
   ApplySkippedSeriesEntry,
@@ -92,16 +86,6 @@ async function diagnoseMissingOnlySeries(prisma: PrismaClient, seriesId: string,
     return `--only=${seriesId}: series "${series.title}" exists but is tracked by a different user, not ${userId}`;
   }
   return `--only=${seriesId}: series "${series.title}" is tracked by ${userId} but was unexpectedly not found among candidate series`;
-}
-
-interface SeriesRow {
-  id: string;
-  title: string;
-  releaseStatus: ReleaseStatus;
-  tmdbId: string | null;
-  userStatus: UserSeriesStatus;
-  nextEpisodeId: string | null;
-  episodes: LocalEpisodeInput[];
 }
 
 // Same query shape as run-refresh.ts's loadCandidateSeries, duplicated
@@ -164,42 +148,6 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
   }));
 }
 
-function tmdbStillUrl(stillPath: string | null | undefined): string | null {
-  return stillPath ? `https://image.tmdb.org/t/p/original${stillPath}` : null;
-}
-
-// Identical to run-refresh.ts's fetchProviderEpisodes — see that file for
-// the season-batching rationale.
-async function fetchProviderEpisodes(tmdb: TmdbClient, tmdbId: string, localSeasonNumbers: number[]): Promise<{ episodes: ProviderEpisodeInput[]; releaseStatus: ReleaseStatus }> {
-  const details = await tmdb.getShowDetails(tmdbId);
-  const releaseStatus = mapTmdbStatusToReleaseStatus(details.status);
-
-  const providerSeasonNumbers = Array.from({ length: details.number_of_seasons ?? 0 }, (_, i) => i + 1);
-  const seasonNumbers = [...new Set([...localSeasonNumbers, ...providerSeasonNumbers])].sort((a, b) => a - b);
-
-  const episodes: ProviderEpisodeInput[] = [];
-  for (const batch of chunkArray(seasonNumbers, MAX_APPEND_TO_RESPONSE_ITEMS)) {
-    const response = await tmdb.getSeasonsBatch(tmdbId, batch);
-    for (const seasonNumber of batch) {
-      const season: TmdbSeason | undefined = getAppendedSeason(response, seasonNumber);
-      if (!season?.episodes) continue;
-      for (const ep of season.episodes) {
-        episodes.push({
-          seasonNumber: ep.season_number,
-          episodeNumber: ep.episode_number,
-          title: ep.name ?? null,
-          overview: ep.overview ?? null,
-          airDate: ep.air_date ? new Date(ep.air_date) : null,
-          imageUrl: tmdbStillUrl(ep.still_path),
-          runtimeMinutes: ep.runtime ?? null,
-        });
-      }
-    }
-  }
-
-  return { episodes, releaseStatus };
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -252,197 +200,49 @@ async function main() {
   let onlyWritesAttempted = false;
 
   for (const series of toInspect) {
-    try {
-      const localSeasonNumbers = [...new Set(series.episodes.map((e) => e.seasonNumber))];
-      const { episodes: providerEpisodes, releaseStatus: providerReleaseStatus } = await fetchProviderEpisodes(tmdb, series.tmdbId!, localSeasonNumbers);
+    const outcome = await refreshOneSeries({ prisma, tmdb, userId: options.userId, series, apply: options.apply });
 
-      const comparison = compareSeriesCatalog({
-        localEpisodes: series.episodes,
-        providerEpisodes,
-        currentReleaseStatus: series.releaseStatus,
-        providerReleaseStatus,
-        currentUserStatus: series.userStatus,
-        currentNextEpisodeId: series.nextEpisodeId,
-      });
+    if (outcome.kind === 'error') {
+      errors.push(outcome.entry);
+      console.log(`  [ERROR] ${outcome.entry.seriesTitle} — ${outcome.entry.message}`);
+      continue;
+    }
 
-      const insertPlan = buildEpisodeInsertPlan({
-        classification: comparison.classification,
-        newEpisodes: comparison.newEpisodes,
-        providerEpisodes,
-        localSeasonNumbers,
-      });
+    const { entry, writeAttempted } = outcome;
+    processedSeries.push(entry);
+    if (writeAttempted && options.only && series.id === options.only) onlyWritesAttempted = true;
 
-      // Always the true "would insert" counts, independent of
-      // classification — unlike insertPlan (which is correctly empty for
-      // anything blocked), this is what the report shows so a
-      // SUSPICIOUS_BULK_INSERT/RISKY_DO_NOT_APPLY/NEEDS_MANUAL_REVIEW entry
-      // doesn't misleadingly show "0 proposed" for a series that actually
-      // had, say, 90 released episodes flagged. Never used for the actual
-      // write decision below — insertPlan alone gates that.
-      const preview = previewEpisodeInsertCounts({ newEpisodes: comparison.newEpisodes, providerEpisodes, localSeasonNumbers });
-
-      const baseEntry = {
-        seriesId: series.id,
-        seriesTitle: series.title,
-        tmdbId: series.tmdbId!,
-        userStatus: series.userStatus,
-        classification: comparison.classification,
-        localEpisodeCount: series.episodes.length,
-        providerEpisodeCount: providerEpisodes.length,
-        seasonsPlanned: preview.seasonNumbers,
-        bulkInsertReason: comparison.bulkInsertReason,
-        seasonZeroReason: comparison.seasonZeroReason,
-        warnings: comparison.warnings,
-      };
-
-      if (insertPlan.episodesToInsert.length === 0) {
-        // No catalog change — but progress can still be stale (the
-        // confirmed bug: an already-local, previously-future episode may
-        // have become released since the last write, with nothing new to
-        // insert either way). Computed here from the SAME already-loaded
-        // local episode/watch data compareSeriesCatalog just used — no
-        // extra DB read needed for this preview, dry-run or not.
-        const orderedEpisodes: OrderedEpisodeForNextLookup[] = [...series.episodes]
-          .sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber)
-          .map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.seasonNumber }));
-        const watchedEpisodeIds = new Set(series.episodes.filter((e) => e.watched).map((e) => e.id));
-
-        const reconciliation = reconcileSeriesProgress({
-          currentUserStatus: series.userStatus,
-          currentNextEpisodeId: series.nextEpisodeId,
-          orderedEpisodes,
-          watchedEpisodeIds,
-          releaseStatus: series.releaseStatus,
-        });
-
-        if (reconciliation.kind !== 'changed') {
-          const reason = reconciliation.kind === 'unchanged' ? 'computed progress already matches stored progress — no write needed' : reconciliation.reason;
-          processedSeries.push({
-            ...baseEntry,
-            episodesPlanned: preview.episodeCount,
-            seasonsCreated: [],
-            episodesInserted: 0,
-            duplicatesSkipped: 0,
-            progressRecomputed: false,
-            progressChange: null,
-            progressReconciliationSource: 'not-attempted',
-            progressSkippedReason: reason,
-            writeSkippedReason: null,
-          });
-          console.log(
-            preview.episodeCount > 0
-              ? `  [${comparison.classification}] ${series.title} — BLOCKED, ${preview.episodeCount} episode(s) would have been proposed`
-              : `  [${comparison.classification}] ${series.title} — nothing to insert, progress up to date (${reason})`,
-          );
-          continue;
-        }
-
-        // A real progress mismatch exists despite zero catalog changes —
-        // this is docs/progress-reconciliation-architecture-todo.md's
-        // exact bug case (X-Men '97). Report it either way; only actually
-        // write in apply mode, via applyProgressReconciliation (never
-        // touches Season/Episode, re-reads and re-checks everything live
-        // inside its own transaction rather than trusting this preview).
-        const previewChange = {
-          userStatusFrom: reconciliation.from.userStatus,
-          userStatusTo: reconciliation.to.userStatus,
-          nextEpisodeIdFrom: reconciliation.from.nextEpisodeId,
-          nextEpisodeIdTo: reconciliation.to.nextEpisodeId,
-        };
-
-        if (!options.apply) {
-          processedSeries.push({
-            ...baseEntry,
-            episodesPlanned: preview.episodeCount,
-            seasonsCreated: [],
-            episodesInserted: 0,
-            duplicatesSkipped: 0,
-            progressRecomputed: false,
-            progressChange: previewChange,
-            progressReconciliationSource: 'progress-only',
-            progressSkippedReason: `dry run — no writes made (${reconciliation.mismatchType})`,
-            writeSkippedReason: null,
-          });
-          console.log(
-            `  [${comparison.classification}] ${series.title} — progress reconciliation would change: ` +
-              `${previewChange.userStatusFrom}/${previewChange.nextEpisodeIdFrom ?? 'null'} -> ${previewChange.userStatusTo}/${previewChange.nextEpisodeIdTo ?? 'null'} (${reconciliation.mismatchType})`,
-          );
-          continue;
-        }
-
-        if (options.only && series.id === options.only) onlyWritesAttempted = true;
-
-        const reconcileResult = await applyProgressReconciliation(prisma, { userId: options.userId, seriesId: series.id });
-        processedSeries.push({
-          ...baseEntry,
-          episodesPlanned: preview.episodeCount,
-          seasonsCreated: [],
-          episodesInserted: 0,
-          duplicatesSkipped: 0,
-          progressRecomputed: reconcileResult.progressRecomputed,
-          progressChange: reconcileResult.progressChange,
-          progressReconciliationSource: 'progress-only',
-          progressSkippedReason: reconcileResult.progressSkippedReason,
-          writeSkippedReason: reconcileResult.writeSkippedReason,
-        });
-        if (reconcileResult.writeSkippedReason) {
-          console.log(`  [SKIPPED AT WRITE TIME] ${series.title} — ${reconcileResult.writeSkippedReason}`);
-        } else if (reconcileResult.progressRecomputed) {
-          console.log(`  [PROGRESS RECONCILED] ${series.title} — ${reconciliation.mismatchType}`);
-        } else {
-          console.log(`  [${comparison.classification}] ${series.title} — progress already up to date at write time`);
-        }
-        continue;
-      }
-
+    // Console reporting only — every actual decision already happened
+    // inside refreshOneSeries; this just narrates entry's fields the same
+    // way the original inline loop did per branch.
+    if (entry.progressReconciliationSource === 'not-attempted') {
+      console.log(
+        entry.episodesPlanned > 0
+          ? `  [${entry.classification}] ${entry.seriesTitle} — BLOCKED, ${entry.episodesPlanned} episode(s) would have been proposed`
+          : `  [${entry.classification}] ${entry.seriesTitle} — nothing to insert, progress up to date (${entry.progressSkippedReason})`,
+      );
+    } else if (entry.progressReconciliationSource === 'progress-only') {
       if (!options.apply) {
-        processedSeries.push({
-          ...baseEntry,
-          episodesPlanned: insertPlan.episodesToInsert.length,
-          seasonsCreated: [],
-          episodesInserted: 0,
-          duplicatesSkipped: 0,
-          progressRecomputed: false,
-          progressChange: null,
-          progressReconciliationSource: 'catalog-insert',
-          progressSkippedReason: 'dry run — no writes made',
-          writeSkippedReason: null,
-        });
-        console.log(`  [${comparison.classification}] ${series.title} — would insert ${insertPlan.episodesToInsert.length} episode(s) (${insertPlan.seasonNumbersToCreate.length} new season(s))`);
-        continue;
-      }
-
-      if (options.only && series.id === options.only) onlyWritesAttempted = true;
-
-      const result = await applySeriesInsertPlan(prisma, {
-        userId: options.userId,
-        seriesId: series.id,
-        insertPlan,
-      });
-
-      processedSeries.push({
-        ...baseEntry,
-        episodesPlanned: insertPlan.episodesToInsert.length,
-        seasonsCreated: result.seasonsCreated,
-        episodesInserted: result.episodesInserted,
-        duplicatesSkipped: result.duplicatesSkipped,
-        progressRecomputed: result.progressRecomputed,
-        progressChange: result.progressChange,
-        progressReconciliationSource: 'catalog-insert',
-        progressSkippedReason: result.progressSkippedReason,
-        writeSkippedReason: result.writeSkippedReason,
-      });
-      if (result.writeSkippedReason) {
-        console.log(`  [SKIPPED AT WRITE TIME] ${series.title} — ${result.writeSkippedReason}`);
-      } else {
+        const c = entry.progressChange!;
         console.log(
-          `  [APPLIED] ${series.title} — inserted ${result.episodesInserted} episode(s), ${result.seasonsCreated.length} new season(s)${result.progressRecomputed ? ', progress recomputed' : ''}`,
+          `  [${entry.classification}] ${entry.seriesTitle} — progress reconciliation would change: ` +
+            `${c.userStatusFrom}/${c.nextEpisodeIdFrom ?? 'null'} -> ${c.userStatusTo}/${c.nextEpisodeIdTo ?? 'null'}`,
         );
+      } else if (entry.writeSkippedReason) {
+        console.log(`  [SKIPPED AT WRITE TIME] ${entry.seriesTitle} — ${entry.writeSkippedReason}`);
+      } else if (entry.progressRecomputed) {
+        console.log(`  [PROGRESS RECONCILED] ${entry.seriesTitle}`);
+      } else {
+        console.log(`  [${entry.classification}] ${entry.seriesTitle} — progress already up to date at write time`);
       }
-    } catch (err) {
-      const message = err instanceof TmdbRequestError ? err.message : (err as Error).message;
-      errors.push({ seriesId: series.id, seriesTitle: series.title, message });
-      console.log(`  [ERROR] ${series.title} — ${message}`);
+    } else if (!options.apply) {
+      console.log(`  [${entry.classification}] ${entry.seriesTitle} — would insert ${entry.episodesPlanned} episode(s) (${entry.seasonsPlanned.length} new season(s))`);
+    } else if (entry.writeSkippedReason) {
+      console.log(`  [SKIPPED AT WRITE TIME] ${entry.seriesTitle} — ${entry.writeSkippedReason}`);
+    } else {
+      console.log(
+        `  [APPLIED] ${entry.seriesTitle} — inserted ${entry.episodesInserted} episode(s), ${entry.seasonsCreated.length} new season(s)${entry.progressRecomputed ? ', progress recomputed' : ''}`,
+      );
     }
   }
 

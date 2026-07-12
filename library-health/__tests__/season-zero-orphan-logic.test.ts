@@ -146,7 +146,7 @@ describe('checkBenignSeasonZeroOrphan', () => {
 
   it('never treats a known risk-listed title as a benign orphan, even with an otherwise-perfect season-0-only pattern', () => {
     const result = checkBenignSeasonZeroOrphan({
-      localTitle: 'Jujutsu Kaisen',
+      localTitle: 'Rurouni Kenshin',
       orphanedWatchedEpisodes: [{ id: 'x', seasonNumber: 0, episodeNumber: 1 }],
       realSeasonShrinkDetected: false,
     });

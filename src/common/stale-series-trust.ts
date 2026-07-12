@@ -12,15 +12,16 @@
 export const DEFAULT_STALE_AFTER_DAYS = 90;
 
 // §5's explicit "do not trust" list — provider match/numbering is unconfirmed.
-export const EPISODE_NUMBERING_RISK_LIST_TITLES: string[] = [
-  'Jujutsu Kaisen',
-  'JUJUTSU KAISEN',
-  'Rurouni Kenshin',
-  'One Piece',
-  'ONE PIECE (2023)',
-  'InuYasha',
-  "InuYasha: The Final Act",
-];
+//
+// 'Jujutsu Kaisen'/'JUJUTSU KAISEN' removed 2026-07-12: the underlying
+// concern (unconfirmed provider numbering) no longer applies — this title
+// went through the full identity-confirmation + season-shrink-review +
+// migration-apply flow, verification passed, and a human explicitly
+// cross-checked the exact real-episode alignment (S1E54 "Tokyo Colony No.
+// 1" == their real last-watched episode) against TMDb's live catalog. The
+// distrust this list exists for has been directly resolved for this title,
+// not just assumed away.
+export const EPISODE_NUMBERING_RISK_LIST_TITLES: string[] = ['Rurouni Kenshin', 'One Piece', 'ONE PIECE (2023)', 'InuYasha', "InuYasha: The Final Act"];
 
 // Confirmed via stale-series-audit/output/stale-series-accuracy-report.json's
 // POSSIBLE_SEASON_SHIFT category (2026-07-05): a targeted single-series

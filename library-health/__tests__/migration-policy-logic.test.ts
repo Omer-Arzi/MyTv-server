@@ -123,20 +123,22 @@ describe('evaluateAutoMigrationEligibility', () => {
 // status/next-episode resolution paths has no way to know about them —
 // each was written before catalog creation existed at all.
 describe('shouldForceWatchingForPendingNextEpisode', () => {
-  it('forces the correction when there is a proposed next episode, status is not protected, and no explicit override was given (the Castlevania case: 20 new unwatched episodes about to be created, currently WATCHING)', () => {
+  it('forces the correction when there is a proposed next episode, status is not protected, no explicit override was given, and the series has watch history (the Castlevania case: 20 new unwatched episodes about to be created, currently WATCHING)', () => {
     const result = shouldForceWatchingForPendingNextEpisode({
       hasProposedNextEpisode: true,
       liveUserStatus: UserSeriesStatus.WATCHING,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(result).toBe(true);
   });
 
-  it('forces the correction even when the current status is a "finished" one that predates the new episodes (the Doctor Who case: CAUGHT_UP with 156 new unwatched episodes about to be created)', () => {
+  it('forces the correction even when the current status is a "finished" one that predates the new episodes (the Doctor Who case: CAUGHT_UP with 156 new unwatched episodes about to be created, already watched)', () => {
     const result = shouldForceWatchingForPendingNextEpisode({
       hasProposedNextEpisode: true,
       liveUserStatus: UserSeriesStatus.CAUGHT_UP,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(result).toBe(true);
   });
@@ -146,6 +148,7 @@ describe('shouldForceWatchingForPendingNextEpisode', () => {
       hasProposedNextEpisode: false,
       liveUserStatus: UserSeriesStatus.CAUGHT_UP,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(result).toBe(false);
   });
@@ -155,6 +158,7 @@ describe('shouldForceWatchingForPendingNextEpisode', () => {
       hasProposedNextEpisode: true,
       liveUserStatus: UserSeriesStatus.DROPPED,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(result).toBe(false);
   });
@@ -164,6 +168,7 @@ describe('shouldForceWatchingForPendingNextEpisode', () => {
       hasProposedNextEpisode: true,
       liveUserStatus: UserSeriesStatus.PAUSED,
       explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
     });
     expect(result).toBe(false);
   });
@@ -173,6 +178,33 @@ describe('shouldForceWatchingForPendingNextEpisode', () => {
       hasProposedNextEpisode: true,
       liveUserStatus: UserSeriesStatus.COMPLETED,
       explicitStatusOverrideGiven: true,
+      hasAnyWatchedEpisode: true,
+    });
+    expect(result).toBe(false);
+  });
+
+  // The bug this test guards against: confirming migration for a WATCHLIST
+  // series the user has never started watching used to force it straight
+  // to WATCHING (landing it in Home's "Watch Next" instead of "Haven't
+  // Started Yet") purely because it has a next unwatched, released episode
+  // — true of virtually every unstarted series by definition. Zero watch
+  // history means there is nothing "newly revealed" to correct for.
+  it('does not force WATCHING for a never-started WATCHLIST series with zero watch history, even with a proposed next episode', () => {
+    const result = shouldForceWatchingForPendingNextEpisode({
+      hasProposedNextEpisode: true,
+      liveUserStatus: UserSeriesStatus.WATCHLIST,
+      explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it('does not force WATCHING for an UNKNOWN-status series with zero watch history', () => {
+    const result = shouldForceWatchingForPendingNextEpisode({
+      hasProposedNextEpisode: true,
+      liveUserStatus: UserSeriesStatus.UNKNOWN,
+      explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: false,
     });
     expect(result).toBe(false);
   });

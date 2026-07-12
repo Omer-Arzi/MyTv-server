@@ -49,7 +49,7 @@ describe('classifyForConfirmation — deferred / risk-listed safety nets', () =>
 
   it('classifies NEEDS_SPECIAL_PROVIDER_HANDLING for a risk-listed local title even with clean candidates', () => {
     const result = classifyForConfirmation(
-      baseInput({ localTitle: 'Jujutsu Kaisen', tmdbCandidates: [candidate({ provider: 'tmdb', id: 'a', watchedVsTotalGap: 0 })] }),
+      baseInput({ localTitle: 'Rurouni Kenshin', tmdbCandidates: [candidate({ provider: 'tmdb', id: 'a', watchedVsTotalGap: 0 })] }),
     );
     expect(result.classification).toBe('NEEDS_SPECIAL_PROVIDER_HANDLING');
     expect(result.recommendedNextAction).toBe('DEFER_HIGH_RISK');
