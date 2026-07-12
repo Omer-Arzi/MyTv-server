@@ -17,6 +17,7 @@
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { deriveUserStatusFromNextEpisode } from '../src/common/derive-user-status';
 import { isEpisodeReleased } from '../src/common/is-episode-released';
+import { isCanonicalSeason } from '../src/modules/series/series-query-helpers';
 
 // Statuses this backfill never touches at all — DROPPED/PAUSED are
 // user-controlled personal intent (never overridden by any automated pass,
@@ -57,6 +58,9 @@ export interface OrderedEpisode {
   // src/common/is-episode-released.ts for why that's the conservative
   // choice rather than assuming a missing date means already aired.
   airDate: Date | null;
+  // Season 0 ("Specials") never participates in derived progress — see
+  // src/modules/series/series-query-helpers.ts::isCanonicalSeason.
+  seasonNumber: number;
 }
 
 export interface DeriveNextEpisodeInput {
@@ -100,7 +104,7 @@ export function deriveNextEpisodeUpdate(input: DeriveNextEpisodeInput): NextEpis
   // airDate (or a null one, treated the same conservative way) means this
   // episode isn't watchable yet, so it's skipped exactly like an already-
   // watched one for this lookup's purposes.
-  const nextEpisode = input.orderedEpisodes.find((e) => !input.watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate));
+  const nextEpisode = input.orderedEpisodes.find((e) => isCanonicalSeason(e.seasonNumber) && !input.watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate));
 
   if (nextEpisode) {
     // deriveUserStatusFromNextEpisode(true, ...) always returns WATCHING —

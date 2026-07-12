@@ -204,8 +204,12 @@ async function main() {
   const watchedIds = new Set(watchedRows.map((w) => w.episodeId));
 
   const mergedForPreview: OrderedEpisode[] = [
-    ...existingEpisodes.map((e) => ({ id: e.id, airDate: updatedEpisodePlans.find((p) => p.seasonNumber === e.season.seasonNumber && p.episodeNumber === e.episodeNumber)?.airDate ? new Date(updatedEpisodePlans.find((p) => p.seasonNumber === e.season.seasonNumber && p.episodeNumber === e.episodeNumber)!.airDate!) : null })),
-    ...newEpisodePlans.map((e) => ({ id: `NEW:S${e.seasonNumber}E${e.episodeNumber}`, airDate: e.airDate ? new Date(e.airDate) : null })),
+    ...existingEpisodes.map((e) => ({
+      id: e.id,
+      airDate: updatedEpisodePlans.find((p) => p.seasonNumber === e.season.seasonNumber && p.episodeNumber === e.episodeNumber)?.airDate ? new Date(updatedEpisodePlans.find((p) => p.seasonNumber === e.season.seasonNumber && p.episodeNumber === e.episodeNumber)!.airDate!) : null,
+      seasonNumber: e.season.seasonNumber,
+    })),
+    ...newEpisodePlans.map((e) => ({ id: `NEW:S${e.seasonNumber}E${e.episodeNumber}`, airDate: e.airDate ? new Date(e.airDate) : null, seasonNumber: e.seasonNumber })),
   ];
   // Sort by season/episode number (same ordering convention used everywhere
   // else in this codebase) — derive from the planned list's own ordering.
@@ -294,7 +298,7 @@ async function main() {
         currentUserStatus: finalCurrentUserStatus,
         releaseStatus: planned.series!.releaseStatus,
         hasFullCatalog: true,
-        orderedEpisodes: finalEpisodes.map((e) => ({ id: e.id, airDate: e.airDate })),
+        orderedEpisodes: finalEpisodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber })),
         watchedEpisodeIds: finalWatchedIds,
       });
 

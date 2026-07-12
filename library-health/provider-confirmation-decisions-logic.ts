@@ -49,6 +49,17 @@ export interface ProviderConfirmationDecision {
   // recomputing status from the new provider's episode counts. Still
   // subject to the DROPPED/PAUSED protection (see migration-confirmation-logic.ts).
   statusOverride?: UserSeriesStatus;
+  // Explicit, separate-from-migrationIntent human acknowledgment that this
+  // title's specific real (non-zero) season-shrink/renumbering pattern has
+  // been reviewed and is approved to migrate anyway, preserving every
+  // orphan untouched. migrationIntent alone can never bypass this check —
+  // see classifyMigrationConfirmation's realSeasonShrinkDetected hard
+  // floor in migration-confirmation-logic.ts for why.
+  seasonShrinkReviewed?: boolean;
+  // 'cli-decisions-file' | 'app-confirmation' — see checkTitleYearSanity's
+  // field comment for exactly what this changes and why: the two sources
+  // carry categorically different identity-provenance guarantees.
+  source?: string;
 }
 
 export type DryRunClassification =
@@ -86,11 +97,20 @@ export interface TitleYearSanityCheckResult {
   reason: string;
 }
 
-// Independent of whatever the human decided — verifies the FETCHED provider
-// candidate still actually looks like the local series before trusting it
-// any further. A human confirming "yes, apply this" doesn't get a free
-// pass past this check; if the providerId in the decision file were ever
-// wrong (typo, stale id, copy-paste error), this is what catches it.
+// Verifies the FETCHED provider candidate still actually looks like the
+// local series before trusting it any further. Originally designed
+// (and still applies in full) for provider-confirmation-decisions.json:
+// decisions.json is human-EDITED text, so a typo'd or stale providerId is
+// a real risk this check exists specifically to catch — a "confirm" entry
+// there does NOT get a free pass past it.
+//
+// A decision with source 'app-confirmation' carries a categorically
+// different provenance: the providerId was never typed, it was selected
+// by a human from a rendered list of real candidates (title, poster, year
+// all visible) via the in-app Find Provider flow — see
+// run-provider-confirmation-for-decision.ts's caller, which trusts this
+// check's result differently depending on that source. The check itself
+// is unchanged; only how its result is used differs.
 const MIN_TITLE_SIMILARITY = 0.6;
 const YEAR_MISMATCH_THRESHOLD = 1;
 

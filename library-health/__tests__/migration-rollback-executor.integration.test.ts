@@ -172,4 +172,36 @@ describeIfDbConfigured('migration rollback executor (integration, real Postgres)
 
     await expect(prisma.$transaction((tx) => executeMigrationRollback(tx, user.id, historyAfterFirst))).rejects.toThrow(MigrationRollbackRefusedError);
   });
+
+  // Regression coverage for the completed-series review batch fix: the
+  // apply transaction now writes Series.releaseStatus from the live
+  // provider fetch (previously never written at all, which is why a
+  // migration-derived COMPLETED status couldn't survive progress
+  // reconciliation — see run-provider-confirmation-for-decision.ts). Since
+  // apply can now change this column, rollback must restore it too.
+  it('restores Series.releaseStatus to releaseStatusBefore when the migration changed it', async () => {
+    const { user, series, history } = await setUpAppliedFixture();
+    // Simulate the fixed apply path: the migration changed releaseStatus
+    // from RETURNING (before) to ENDED (after, matching the live series
+    // row right now).
+    await prisma.migrationHistory.update({ where: { id: history.id }, data: { releaseStatusBefore: ReleaseStatus.RETURNING, releaseStatusAfter: ReleaseStatus.ENDED } });
+    await prisma.series.update({ where: { id: series.id }, data: { releaseStatus: ReleaseStatus.ENDED } });
+    const historyWithReleaseStatusChange = await prisma.migrationHistory.findUniqueOrThrow({ where: { id: history.id } });
+
+    await prisma.$transaction((tx) => executeMigrationRollback(tx, user.id, historyWithReleaseStatusChange));
+
+    const seriesAfter = await prisma.series.findUniqueOrThrow({ where: { id: series.id } });
+    expect(seriesAfter.releaseStatus).toBe(ReleaseStatus.RETURNING);
+  });
+
+  it('leaves Series.releaseStatus untouched when the migration never changed it (releaseStatusBefore === releaseStatusAfter)', async () => {
+    const { user, series, history } = await setUpAppliedFixture();
+    await prisma.migrationHistory.update({ where: { id: history.id }, data: { releaseStatusBefore: ReleaseStatus.ENDED, releaseStatusAfter: ReleaseStatus.ENDED } });
+    const historyUnchanged = await prisma.migrationHistory.findUniqueOrThrow({ where: { id: history.id } });
+
+    await prisma.$transaction((tx) => executeMigrationRollback(tx, user.id, historyUnchanged));
+
+    const seriesAfter = await prisma.series.findUniqueOrThrow({ where: { id: series.id } });
+    expect(seriesAfter.releaseStatus).toBe(ReleaseStatus.ENDED); // createFixtureSeries's original value, never touched
+  });
 });

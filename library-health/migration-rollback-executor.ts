@@ -6,7 +6,7 @@
 // eligibility result, and throws instead of writing anything when either
 // check fails.
 
-import { MigrationHistory, Prisma, UserSeriesStatus } from '@prisma/client';
+import { MigrationHistory, Prisma, ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { evaluateMigrationRollbackEligibility, MigrationRollbackEligibility } from './migration-rollback-logic';
 
 export class MigrationRollbackRefusedError extends Error {
@@ -93,6 +93,16 @@ export async function executeMigrationRollback(tx: Prisma.TransactionClient, use
       update: { provider: providerBefore.provider, providerId: providerBefore.providerId, tmdbId: providerBefore.tmdbId },
     });
     providerRestored = true;
+  }
+
+  // 4. Restore Series.releaseStatus if this migration changed it — mirrors
+  // the same before/after restoration pattern as provider/progress above.
+  // releaseStatusBefore is nullable (an ENUM column can't literally be
+  // null in the DB, but the MigrationHistory snapshot type allows it for
+  // older/edge-case rows) — only restore when we actually have a concrete
+  // prior value to restore to.
+  if (history.releaseStatusBefore !== null && history.releaseStatusBefore !== history.releaseStatusAfter) {
+    await tx.series.update({ where: { id: history.seriesId }, data: { releaseStatus: history.releaseStatusBefore as ReleaseStatus } });
   }
 
   await tx.migrationHistory.update({ where: { id: history.id }, data: { rolledBackAt: new Date(), rollbackReason: 'Rolled back via Migration Workbench.' } });

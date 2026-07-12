@@ -353,11 +353,29 @@ model ProviderIdentityDecision {
   // guessing from other fields.
   source String
 
-  // The identity-similarity score (titleSimilarity, 0..1) at decision
-  // time — lets a future audit flag a decision as possibly stale if the
-  // local title changes enough that the original confidence no longer
-  // applies. Null for JSON-backfilled rows where this wasn't recorded.
+  // The candidate's confidence at decision time, normalized 0..1 — the
+  // SAME canonical scale as ProviderCandidateDto.confidenceScore and
+  // ConfirmIdentityDto.confidence (see search-provider-candidates-for-series.ts's
+  // normalizeConfidenceScore — the one place a 0-100 raw score is ever
+  // converted to this 0..1 domain representation). Lets a future audit
+  // flag a decision as possibly stale if the local title changes enough
+  // that the original confidence no longer applies. Null for
+  // JSON-backfilled rows where this wasn't recorded.
   confidence Float?
+
+  // Explicit, human-reviewed acknowledgment that THIS series' specific
+  // season-shrink/renumbering pattern has been checked and approved to
+  // migrate anyway, preserving every orphan untouched — see
+  // classifyMigrationConfirmation's realSeasonShrinkDetected hard floor
+  // (library-health/migration-confirmation-logic.ts). Deliberately
+  // SEPARATE from migrationIntent: migrationIntent alone can never bypass
+  // that floor (that is the floor's entire purpose — added after an audit
+  // found migrationIntent could otherwise mask a genuine numbering-
+  // collision risk). This is the one narrow, explicit, per-decision
+  // override for it — never implied, never batch-defaulted, never
+  // inferred from any other field. The title/year identity sanity check
+  // remains completely non-bypassable regardless of this flag.
+  seasonShrinkReviewed Boolean @default(false)
 
   decidedAt DateTime @default(now())
   updatedAt DateTime @updatedAt

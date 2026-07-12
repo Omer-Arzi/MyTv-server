@@ -13,9 +13,9 @@ function input(overrides: Partial<DeriveNextEpisodeInput> = {}): DeriveNextEpiso
     releaseStatus: ReleaseStatus.RETURNING,
     hasFullCatalog: true,
     orderedEpisodes: [
-      { id: 'ep-1', airDate: PAST },
-      { id: 'ep-2', airDate: PAST },
-      { id: 'ep-3', airDate: PAST },
+      { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+      { id: 'ep-2', airDate: PAST, seasonNumber: 1 },
+      { id: 'ep-3', airDate: PAST, seasonNumber: 1 },
     ],
     watchedEpisodeIds: new Set(['ep-1']),
     ...overrides,
@@ -70,7 +70,7 @@ describe('deriveNextEpisodeUpdate — incomplete catalog', () => {
     // The trap this guards against: MyTv's own (incomplete) episode list
     // has nothing left unwatched, which looks identical to "caught up" if
     // you don't know the catalog is incomplete.
-    const decision = deriveNextEpisodeUpdate(input({ hasFullCatalog: false, orderedEpisodes: [{ id: 'ep-1', airDate: PAST }], watchedEpisodeIds: new Set(['ep-1']) }));
+    const decision = deriveNextEpisodeUpdate(input({ hasFullCatalog: false, orderedEpisodes: [{ id: 'ep-1', airDate: PAST, seasonNumber: 1 }], watchedEpisodeIds: new Set(['ep-1']) }));
     expect(decision.action).toBe('unchanged-incomplete-catalog');
     expect(decision.newUserStatus).toBeNull();
   });
@@ -163,9 +163,9 @@ describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next
     const decision = deriveNextEpisodeUpdate(
       input({
         orderedEpisodes: [
-          { id: 'ep-1', airDate: PAST },
-          { id: 'ep-2', airDate: FUTURE },
-          { id: 'ep-3', airDate: FUTURE },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: FUTURE, seasonNumber: 1 },
+          { id: 'ep-3', airDate: FUTURE, seasonNumber: 1 },
         ],
         watchedEpisodeIds: new Set(['ep-1']),
       }),
@@ -180,8 +180,8 @@ describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next
     const decision = deriveNextEpisodeUpdate(
       input({
         orderedEpisodes: [
-          { id: 'ep-1', airDate: PAST },
-          { id: 'ep-2', airDate: null },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: null, seasonNumber: 1 },
         ],
         watchedEpisodeIds: new Set(['ep-1']),
       }),
@@ -195,9 +195,9 @@ describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next
       input({
         currentUserStatus: UserSeriesStatus.CAUGHT_UP,
         orderedEpisodes: [
-          { id: 'ep-1', airDate: PAST },
-          { id: 'ep-2', airDate: PAST },
-          { id: 'ep-3', airDate: FUTURE },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-3', airDate: FUTURE, seasonNumber: 1 },
         ],
         watchedEpisodeIds: new Set(['ep-1', 'ep-2']),
       }),
@@ -215,9 +215,9 @@ describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next
     const decision = deriveNextEpisodeUpdate(
       input({
         orderedEpisodes: [
-          { id: 'ep-1', airDate: PAST },
-          { id: 'ep-2', airDate: FUTURE },
-          { id: 'ep-3', airDate: PAST },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: FUTURE, seasonNumber: 1 },
+          { id: 'ep-3', airDate: PAST, seasonNumber: 1 },
         ],
         watchedEpisodeIds: new Set(['ep-1']),
       }),
@@ -230,9 +230,42 @@ describe('deriveNextEpisodeUpdate — future/unreleased episodes are never "next
     const decision = deriveNextEpisodeUpdate(
       input({
         orderedEpisodes: [
-          { id: 'ep-1', airDate: PAST },
-          { id: 'ep-2', airDate: PAST },
-          { id: 'ep-3', airDate: FUTURE },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-3', airDate: FUTURE, seasonNumber: 1 },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    expect(decision.action).toBe('set-next-episode');
+    expect(decision.nextEpisodeId).toBe('ep-2');
+  });
+});
+
+describe('deriveNextEpisodeUpdate — Season 0 (Specials) never participates in derived progress', () => {
+  it('never proposes a Season 0 episode as next, even when it is the only unwatched, released one', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        currentUserStatus: UserSeriesStatus.WATCHING,
+        releaseStatus: ReleaseStatus.ENDED,
+        orderedEpisodes: [
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'special-1', airDate: PAST, seasonNumber: 0 },
+        ],
+        watchedEpisodeIds: new Set(['ep-1']),
+      }),
+    );
+    expect(decision.action).toBe('mark-completed');
+    expect(decision.nextEpisodeId).toBeNull();
+  });
+
+  it('skips an unwatched Season 0 episode and still finds the real next canonical episode', () => {
+    const decision = deriveNextEpisodeUpdate(
+      input({
+        orderedEpisodes: [
+          { id: 'special-1', airDate: PAST, seasonNumber: 0 },
+          { id: 'ep-1', airDate: PAST, seasonNumber: 1 },
+          { id: 'ep-2', airDate: PAST, seasonNumber: 1 },
         ],
         watchedEpisodeIds: new Set(['ep-1']),
       }),

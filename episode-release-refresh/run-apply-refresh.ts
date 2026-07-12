@@ -304,7 +304,7 @@ async function main() {
         // extra DB read needed for this preview, dry-run or not.
         const orderedEpisodes: OrderedEpisodeForNextLookup[] = [...series.episodes]
           .sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber)
-          .map((e) => ({ id: e.id, airDate: e.airDate }));
+          .map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.seasonNumber }));
         const watchedEpisodeIds = new Set(series.episodes.filter((e) => e.watched).map((e) => e.id));
 
         const reconciliation = reconcileSeriesProgress({

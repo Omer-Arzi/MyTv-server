@@ -20,6 +20,8 @@ export async function loadDecisionsFromDb(prisma: PrismaClient, userId: string):
     providerId: row.providerId ?? undefined,
     migrationIntent: row.migrationIntent,
     statusOverride: (row.statusOverride ?? undefined) as ProviderConfirmationDecision['statusOverride'],
+    seasonShrinkReviewed: row.seasonShrinkReviewed,
+    source: row.source,
     notes: row.notes ?? undefined,
   }));
 }
@@ -47,6 +49,8 @@ export async function findDecisionForSeries(prisma: PrismaClient, userId: string
       providerId: row.providerId ?? undefined,
       migrationIntent: row.migrationIntent,
       statusOverride: (row.statusOverride ?? undefined) as ProviderConfirmationDecision['statusOverride'],
+      seasonShrinkReviewed: row.seasonShrinkReviewed,
+      source: row.source,
       notes: row.notes ?? undefined,
     },
   };
@@ -57,6 +61,10 @@ export interface SaveProviderIdentityDecisionInput {
   seriesId: string;
   provider: SupportedProvider;
   providerId: string;
+  // Normalized 0..1 — the same canonical scale as ProviderCandidateDto.confidenceScore
+  // and ConfirmIdentityDto.confidence. Callers must pass the value through
+  // unmodified from the candidate the user selected, never re-derive or
+  // rescale it here.
   confidence: number;
   notes?: string;
 }
@@ -88,5 +96,36 @@ export async function saveProviderIdentityDecision(prisma: PrismaClient, input: 
       notes: input.notes,
       source: 'app-confirmation',
     },
+  });
+}
+
+export class NoDecisionToReviewError extends Error {
+  constructor(seriesId: string) {
+    super(`No confirmed provider identity decision exists for series ${seriesId} — cannot review a season-shrink pattern without one.`);
+    this.name = 'NoDecisionToReviewError';
+  }
+}
+
+// The one, explicit, separate-from-identity-confirmation action that sets
+// seasonShrinkReviewed — see migration-confirmation-logic.ts's
+// classifyMigrationConfirmation for what this specifically unlocks (ONLY
+// the realSeasonShrinkDetected hard floor; every other safety floor is
+// untouched). Never bundled into confirmIdentity/saveProviderIdentityDecision
+// above — per this task's explicit requirement, confirming identity must
+// never automatically imply season-shrink review too. Requires a decision
+// to already exist and be 'confirm' — reviewing a season-shrink pattern
+// without a confirmed identity first makes no sense (there's no candidate
+// catalog to compare shapes against). Deliberately does NOT set
+// statusOverride — the resulting status is left to migration mode's own
+// default (carry the current status forward), matching this app's
+// "no manual status picker" posture (see MigrationProposalScreen).
+export async function reviewSeasonShrinkForDecision(prisma: PrismaClient, userId: string, seriesId: string) {
+  const existing = await prisma.providerIdentityDecision.findUnique({ where: { userId_seriesId: { userId, seriesId } } });
+  if (!existing || existing.decision !== 'confirm') {
+    throw new NoDecisionToReviewError(seriesId);
+  }
+  return prisma.providerIdentityDecision.update({
+    where: { userId_seriesId: { userId, seriesId } },
+    data: { migrationIntent: true, seasonShrinkReviewed: true },
   });
 }

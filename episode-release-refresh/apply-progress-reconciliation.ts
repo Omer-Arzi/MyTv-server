@@ -77,7 +77,7 @@ export async function applyProgressReconciliation(prisma: PrismaClient, input: A
       select: { id: true, episodeNumber: true, airDate: true, season: { select: { seasonNumber: true } } },
     });
     episodes.sort((a, b) => a.season.seasonNumber - b.season.seasonNumber || a.episodeNumber - b.episodeNumber);
-    const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes.map((e) => ({ id: e.id, airDate: e.airDate }));
+    const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
 
     const watches = await tx.episodeWatch.findMany({
       where: { userId: input.userId, episode: { season: { seriesId: input.seriesId } } },

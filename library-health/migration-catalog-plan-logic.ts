@@ -17,6 +17,7 @@
 
 import { NewEpisodeFound, ProviderEpisodeInput } from '../episode-release-refresh/refresh-logic';
 import { buildEpisodeInsertCandidates, EpisodeInsertPlan } from '../episode-release-refresh/build-episode-insert-plan';
+import { isCanonicalSeason } from '../src/modules/series/series-query-helpers';
 
 // Provenance marker for every Season/Episode row this capability creates.
 // Lives here (a pure, side-effect-free module) rather than in
@@ -64,15 +65,21 @@ function episodeKey(seasonNumber: number, episodeNumber: number): string {
   return `${seasonNumber}:${episodeNumber}`;
 }
 
-// Counts only LOCAL episodes that have a provider counterpart — orphans
-// (watched or not) are intentionally excluded, since resolveObjectiveMigrationStatus's
-// whole point is "is the provider-recognized portion of the catalog fully
-// watched," independent of whatever orphans exist alongside it.
+// Counts only LOCAL, CANONICAL-season episodes that have a provider
+// counterpart — orphans (watched or not) are intentionally excluded, since
+// resolveObjectiveMigrationStatus's whole point is "is the
+// provider-recognized portion of the MAIN catalog fully watched,"
+// independent of whatever orphans exist alongside it. Season 0
+// ("Specials") is excluded the same way (isCanonicalSeason,
+// series-query-helpers.ts) — an unwatched Special must never keep a
+// migration proposal from deriving COMPLETED/CAUGHT_UP, same product rule
+// as every other progress-derivation path in this app.
 export function computeMatchedEpisodeCounts(localEpisodes: MatchedEpisodeCountInput[], providerEpisodes: ProviderEpisodeKey[]): MatchedEpisodeCounts {
-  const providerKeys = new Set(providerEpisodes.map((e) => episodeKey(e.seasonNumber, e.episodeNumber)));
+  const providerKeys = new Set(providerEpisodes.filter((e) => isCanonicalSeason(e.seasonNumber)).map((e) => episodeKey(e.seasonNumber, e.episodeNumber)));
   let matchedTotalCount = 0;
   let matchedWatchedCount = 0;
   for (const ep of localEpisodes) {
+    if (!isCanonicalSeason(ep.seasonNumber)) continue;
     if (!providerKeys.has(episodeKey(ep.seasonNumber, ep.episodeNumber))) continue;
     matchedTotalCount += 1;
     if (ep.watched) matchedWatchedCount += 1;

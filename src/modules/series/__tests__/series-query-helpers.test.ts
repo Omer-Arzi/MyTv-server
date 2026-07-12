@@ -15,8 +15,8 @@ import { ManualUserStatus } from '../dto/update-series-status.dto';
 const PAST = new Date('2000-01-01');
 const FUTURE = new Date('2999-01-01');
 
-function nextEp(id: string, airDate: Date | null = PAST): OrderedEpisodeForNextLookup {
-  return { id, airDate };
+function nextEp(id: string, airDate: Date | null = PAST, seasonNumber = 1): OrderedEpisodeForNextLookup {
+  return { id, airDate, seasonNumber };
 }
 
 describe('buildLibraryWhere', () => {
@@ -178,6 +178,26 @@ describe('findFirstUnwatchedEpisodeId', () => {
 
   it('finds a later already-released unwatched episode past an unreleased gap', () => {
     expect(findFirstUnwatchedEpisodeId([nextEp('e1'), nextEp('e2', FUTURE), nextEp('e3')], new Set(['e1']))).toBe('e3');
+  });
+
+  // Season 0 ("Specials") never participates in derived progress — see
+  // isCanonicalSeason's doc comment. These are the canonical, single-point
+  // regression tests for that product rule; every caller of this function
+  // inherits it automatically.
+  it('never returns a Season 0 episode, even when it is the only unwatched, released one', () => {
+    expect(findFirstUnwatchedEpisodeId([nextEp('special-1', PAST, 0), nextEp('e1', PAST, 1)], new Set(['e1']))).toBeNull();
+  });
+
+  it('skips an unwatched Season 0 episode and finds the real next canonical episode after it', () => {
+    expect(findFirstUnwatchedEpisodeId([nextEp('special-1', PAST, 0), nextEp('e1', PAST, 1), nextEp('e2', PAST, 1)], new Set(['e1']))).toBe('e2');
+  });
+
+  it('ignores Season 0 regardless of its position in the ordered list', () => {
+    expect(findFirstUnwatchedEpisodeId([nextEp('e1', PAST, 1), nextEp('special-1', PAST, 0), nextEp('e2', PAST, 1)], new Set(['e1']))).toBe('e2');
+  });
+
+  it('returns null (never a Special) when only Season 0 episodes remain unwatched, even with everything else watched', () => {
+    expect(findFirstUnwatchedEpisodeId([nextEp('e1', PAST, 1), nextEp('special-1', PAST, 0)], new Set(['e1']))).toBeNull();
   });
 });
 

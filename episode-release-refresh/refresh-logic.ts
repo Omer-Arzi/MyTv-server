@@ -12,6 +12,7 @@ import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { isEpisodeReleased } from '../src/common/is-episode-released';
 import { deriveUserStatusFromNextEpisode } from '../src/common/derive-user-status';
 import { isUntrustedNextEpisodeTitle } from '../src/common/stale-series-trust';
+import { isCanonicalSeason } from '../src/modules/series/series-query-helpers';
 
 // --- Candidate eligibility ------------------------------------------------
 
@@ -376,9 +377,13 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
 
   // --- Step 4: hypothetical nextEpisodeId/userStatus, "as if applied" ----
   // Merges local + provider-only (new) episodes into one ordered catalog
-  // and finds the first unwatched, released slot — the exact same rule
-  // findFirstUnwatchedEpisodeId uses live, just fed a hypothetical merged
-  // catalog instead of only what's already in the DB.
+  // and finds the first unwatched, released, CANONICAL-season slot — the
+  // exact same rule findFirstUnwatchedEpisodeId uses live
+  // (series-query-helpers.ts), just fed a hypothetical merged catalog
+  // instead of only what's already in the DB. isCanonicalSeason excludes
+  // Season 0 ("Specials") from ever becoming a proposed next episode —
+  // Specials are optional bonus content and never block/drive derived
+  // progress, see isCanonicalSeason's own doc comment for the full rule.
   type MergedSlot = { seasonNumber: number; episodeNumber: number; airDate: Date | null; watched: boolean; localId: string | null };
   const merged = new Map<string, MergedSlot>();
   for (const [key, ep] of localByKey) {
@@ -389,7 +394,7 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
     merged.set(key, { seasonNumber: ep.seasonNumber, episodeNumber: ep.episodeNumber, airDate: ep.airDate, watched: false, localId: null });
   }
   const orderedMerged = [...merged.values()].sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber);
-  const proposedNext = orderedMerged.find((slot) => !slot.watched && isEpisodeReleased(slot.airDate, now)) ?? null;
+  const proposedNext = orderedMerged.find((slot) => isCanonicalSeason(slot.seasonNumber) && !slot.watched && isEpisodeReleased(slot.airDate, now)) ?? null;
 
   const proposedNextEpisodeId = proposedNext?.localId ?? null;
   const proposedNextEpisodeLabel = proposedNext ? episodeLabel(proposedNext.seasonNumber, proposedNext.episodeNumber) : null;

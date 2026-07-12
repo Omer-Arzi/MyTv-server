@@ -100,20 +100,42 @@ export function groupEpisodesBySeason(
 export interface OrderedEpisodeForNextLookup {
   id: string;
   airDate: Date | null;
+  // Required (not optional) deliberately: this forces every caller to
+  // actually fetch it, which is what lets this function enforce the
+  // canonical "Season 0 (Specials) never participates in derived
+  // progress" product rule (docs/season-zero-derivation-todo.md) in
+  // exactly one place, rather than each caller remembering (or forgetting)
+  // to filter it out itself.
+  seasonNumber: number;
 }
 
-// Finds the first unwatched, already-released episode in (seasonNumber,
-// episodeNumber) order — same "first gap, not just after the last-watched
-// position" semantics as next-episode-backfill/derive-next-episode.ts,
-// reimplemented here (deliberately not imported — that module is a
-// one-time offline backfill pipeline, this is a live request-path concern,
-// and the task explicitly scopes this change away from touching that
-// pipeline) rather than "next episode after wherever the user last
-// clicked." Requiring isEpisodeReleased means a not-yet-aired episode is
-// never returned as "next" even if it's the first unwatched one in order —
-// see src/common/is-episode-released.ts for why.
+// Season 0 is the industry-standard "Specials" convention (TMDb/TheTVDB
+// both use it) — this codebase's provider-comparison logic already treats
+// it specially (season-zero-orphan-logic.ts). Specials are optional bonus
+// content: a user is considered finished with a series once every
+// canonical (seasonNumber > 0) episode is watched, regardless of whether
+// any Special has been. This does NOT remove/hide Specials anywhere else
+// — they stay fully in the catalog, on the Series page, and watchable;
+// this filter only governs what counts toward DERIVED progress.
+export function isCanonicalSeason(seasonNumber: number): boolean {
+  return seasonNumber > 0;
+}
+
+// Finds the first unwatched, already-released, CANONICAL-season episode in
+// (seasonNumber, episodeNumber) order — same "first gap, not just after
+// the last-watched position" semantics as
+// next-episode-backfill/derive-next-episode.ts, reimplemented here
+// (deliberately not imported — that module is a one-time offline backfill
+// pipeline, this is a live request-path concern, and the task explicitly
+// scopes this change away from touching that pipeline) rather than "next
+// episode after wherever the user last clicked." Requiring
+// isEpisodeReleased means a not-yet-aired episode is never returned as
+// "next" even if it's the first unwatched one in order — see
+// src/common/is-episode-released.ts for why. Requiring isCanonicalSeason
+// means a Season 0 Special is never returned as "next" either, even if
+// it's unwatched and released — see isCanonicalSeason above.
 export function findFirstUnwatchedEpisodeId(orderedEpisodes: OrderedEpisodeForNextLookup[], watchedEpisodeIds: ReadonlySet<string>, now: Date = new Date()): string | null {
-  const next = orderedEpisodes.find((e) => !watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate, now));
+  const next = orderedEpisodes.find((e) => isCanonicalSeason(e.seasonNumber) && !watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate, now));
   return next?.id ?? null;
 }
 

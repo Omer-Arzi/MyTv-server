@@ -49,8 +49,8 @@ describe('recomputeProgressAfterUnwatch', () => {
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       orderedEpisodes: [
-        { id: 'e1', airDate: PAST },
-        { id: 'e2', airDate: PAST },
+        { id: 'e1', airDate: PAST, seasonNumber: 1 },
+        { id: 'e2', airDate: PAST, seasonNumber: 1 },
       ],
       // e1 was just unwatched — e2 is still watched.
       watchedEpisodeIdsAfterRemoval: new Set(['e2']),
@@ -67,9 +67,9 @@ describe('recomputeProgressAfterUnwatch', () => {
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.WATCHING,
       orderedEpisodes: [
-        { id: 'e1', airDate: PAST },
-        { id: 'e2', airDate: PAST },
-        { id: 'e3', airDate: PAST },
+        { id: 'e1', airDate: PAST, seasonNumber: 1 },
+        { id: 'e2', airDate: PAST, seasonNumber: 1 },
+        { id: 'e3', airDate: PAST, seasonNumber: 1 },
       ],
       // e2 was unwatched; e1 and e3 remain watched — e2 is the earliest gap.
       watchedEpisodeIdsAfterRemoval: new Set(['e1', 'e3']),
@@ -82,7 +82,7 @@ describe('recomputeProgressAfterUnwatch', () => {
     const result = recomputeProgressAfterUnwatch({
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.COMPLETED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIdsAfterRemoval: new Set(['e1']),
       now: NOW,
     });
@@ -95,7 +95,7 @@ describe('recomputeProgressAfterUnwatch', () => {
     const result = recomputeProgressAfterUnwatch({
       releaseStatus: ReleaseStatus.ENDED,
       currentUserStatus: UserSeriesStatus.COMPLETED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIdsAfterRemoval: new Set(['e1']),
       now: NOW,
     });
@@ -107,8 +107,8 @@ describe('recomputeProgressAfterUnwatch', () => {
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.CAUGHT_UP,
       orderedEpisodes: [
-        { id: 'e1', airDate: FUTURE },
-        { id: 'e2', airDate: PAST },
+        { id: 'e1', airDate: FUTURE, seasonNumber: 1 },
+        { id: 'e2', airDate: PAST, seasonNumber: 1 },
       ],
       watchedEpisodeIdsAfterRemoval: new Set(['e2']),
       now: NOW,
@@ -121,7 +121,7 @@ describe('recomputeProgressAfterUnwatch', () => {
     const result = recomputeProgressAfterUnwatch({
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.DROPPED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIdsAfterRemoval: new Set(),
       now: NOW,
     });
@@ -135,7 +135,7 @@ describe('recomputeProgressAfterUnwatch', () => {
     const result = recomputeProgressAfterUnwatch({
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.PAUSED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIdsAfterRemoval: new Set(['e1']),
       now: NOW,
     });
@@ -147,7 +147,7 @@ describe('recomputeProgressAfterUnwatch', () => {
     const result = recomputeProgressAfterUnwatch({
       releaseStatus: ReleaseStatus.RETURNING,
       currentUserStatus: UserSeriesStatus.WATCHLIST,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIdsAfterRemoval: new Set(),
       now: NOW,
     });

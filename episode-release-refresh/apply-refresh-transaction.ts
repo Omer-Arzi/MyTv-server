@@ -114,7 +114,7 @@ export async function applySeriesInsertPlan(prisma: PrismaClient, input: ApplySe
     });
     const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
 
-    const orderedForLookup: OrderedEpisodeForNextLookup[] = allEpisodes.map((e) => ({ id: e.id, airDate: e.airDate }));
+    const orderedForLookup: OrderedEpisodeForNextLookup[] = allEpisodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
 
     // Same contract deriveActiveProgress's releaseStatus input always has
     // (markWatched, watch-all, progress-reconciliation-logic.ts): local

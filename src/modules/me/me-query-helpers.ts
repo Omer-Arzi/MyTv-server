@@ -4,6 +4,7 @@
 import { UserSeriesStatus } from '@prisma/client';
 import { isEpisodeReleased } from '../../common/is-episode-released';
 import { isUntrustedNextEpisodeTitle } from '../../common/stale-series-trust';
+import { isCanonicalSeason } from '../series/series-query-helpers';
 
 export interface ProgressWithNextEpisode {
   nextEpisode: { airDate: Date | null } | null;
@@ -168,4 +169,88 @@ export function computeRemainingEpisodesAfterNext(
   const index = orderedEpisodes.findIndex((e) => e.id === nextEpisodeId);
   if (index === -1) return null;
   return orderedEpisodes.slice(index + 1).filter((e) => !watchedEpisodeIds.has(e.id) && isEpisodeReleased(e.airDate, now)).length;
+}
+
+// --- "Haven't Started Yet" Home carousel ----------------------------------
+//
+// A derived Home section, not a persistent user status — WATCHLIST rows
+// that already have at least one real, released, watchable episode. Every
+// eligibility rule is re-checked here independently of whatever the
+// caller's DB query already filtered for, same defense-in-depth posture as
+// filterReleasedNextEpisodes/isTrustedStaleCandidate above.
+
+export interface HavenStartedYetCandidateEpisode {
+  id: string;
+  seasonId: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+  overview: string | null;
+  airDate: Date | null;
+  runtimeMinutes: number | null;
+  imageUrl: string | null;
+}
+
+export interface HavenStartedYetCandidate {
+  seriesId: string;
+  seriesTitle: string;
+  userStatus: UserSeriesStatus;
+  // null when this series has no confirmed provider match yet.
+  externalIds: { provider: string | null; providerId: string | null } | null;
+  episodes: HavenStartedYetCandidateEpisode[];
+}
+
+export interface HavenStartedYetResult {
+  seriesId: string;
+  latestReleasedRegularEpisode: HavenStartedYetCandidateEpisode;
+  releasedRegularEpisodeCount: number;
+}
+
+// The full eligibility check, as one predicate + derivation, mirroring
+// isTrustedStaleCandidate's shape:
+//   1. userStatus === WATCHLIST (re-checked, not just trusted from the caller's WHERE).
+//   2. zero EpisodeWatch rows for this series — "haven't started" is exact,
+//      not "mostly unwatched."
+//   3. at least one RELEASED, REGULAR (season > 0) episode — Season 0/Specials
+//      alone can never qualify a series for this section, same rule
+//      COMPLETED/CAUGHT_UP derivation already uses (isCanonicalSeason).
+//   4. a confirmed provider mapping exists (ExternalIds.provider/providerId
+//      both set) — an unconfirmed series has no trustworthy catalog/air-date
+//      data to base "released" on.
+//   5. not on the known episode-numbering/season-shift risk list — the same
+//      Home-eligibility trust gate Watch Next and stale-series both use.
+export function deriveHavenStartedYetCandidates(candidates: HavenStartedYetCandidate[], watchedEpisodeIds: ReadonlySet<string>, now: Date = new Date()): HavenStartedYetResult[] {
+  const results: HavenStartedYetResult[] = [];
+
+  for (const candidate of candidates) {
+    if (candidate.userStatus !== UserSeriesStatus.WATCHLIST) continue;
+    if (candidate.episodes.some((e) => watchedEpisodeIds.has(e.id))) continue;
+    if (!candidate.externalIds?.provider || !candidate.externalIds?.providerId) continue;
+    if (isUntrustedNextEpisodeTitle(candidate.seriesTitle)) continue;
+
+    const releasedRegularEpisodes = candidate.episodes.filter((e) => isCanonicalSeason(e.seasonNumber) && isEpisodeReleased(e.airDate, now));
+    if (releasedRegularEpisodes.length === 0) continue;
+
+    const latestReleasedRegularEpisode = releasedRegularEpisodes.reduce((latest, e) => (e.airDate! > latest.airDate! ? e : latest));
+
+    results.push({ seriesId: candidate.seriesId, latestReleasedRegularEpisode, releasedRegularEpisodeCount: releasedRegularEpisodes.length });
+  }
+
+  return results;
+}
+
+// Sort contract: newest released first, alphabetical (case-insensitive) on
+// ties. Takes the already-derived results plus a title lookup rather than
+// re-deriving, so this stays a pure, independently testable sort step.
+export function sortHavenStartedYetResults<T extends { seriesId: string; latestReleasedRegularEpisode: { airDate: Date | null } }>(
+  results: T[],
+  titleBySeriesId: ReadonlyMap<string, string>,
+): T[] {
+  return [...results].sort((a, b) => {
+    const dateDiff = (b.latestReleasedRegularEpisode.airDate?.getTime() ?? 0) - (a.latestReleasedRegularEpisode.airDate?.getTime() ?? 0);
+    if (dateDiff !== 0) return dateDiff;
+    const titleA = titleBySeriesId.get(a.seriesId) ?? '';
+    const titleB = titleBySeriesId.get(b.seriesId) ?? '';
+    return titleA.localeCompare(titleB);
+  });
 }

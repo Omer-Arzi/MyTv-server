@@ -143,11 +143,11 @@ export class SeriesService {
         this.prisma.episode.findMany({
           where: { season: { seriesId } },
           orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-          select: { id: true, airDate: true },
+          select: { id: true, airDate: true, season: { select: { seasonNumber: true } } },
         }),
         this.prisma.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
       ]);
-      orderedEpisodes = episodes;
+      orderedEpisodes = episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
       watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
     } else if (userStatus === UserSeriesStatus.PAUSED || userStatus === UserSeriesStatus.DROPPED) {
       const existingProgress = await this.prisma.userSeriesProgress.findUnique({

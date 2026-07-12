@@ -14,16 +14,18 @@ export class HomeService {
   constructor(private readonly meService: MeService) {}
 
   async getHome(userId: string): Promise<HomeResponseDto> {
-    const [recentlyWatchedPage, watchNext, staleSeries] = await Promise.all([
+    const [recentlyWatchedPage, watchNext, staleSeries, haventStartedYet] = await Promise.all([
       this.meService.getRecentlyWatched(userId, HOME_RECENTLY_WATCHED_LIMIT),
       this.meService.getWatchNext(userId),
       this.meService.getStaleSeries(userId, HOME_STALE_AFTER_DAYS),
+      this.meService.getHavenStartedYet(userId),
     ]);
 
     return {
       recentlyWatched: recentlyWatchedPage.items,
       watchNext,
       staleSeries,
+      haventStartedYet,
     };
   }
 }

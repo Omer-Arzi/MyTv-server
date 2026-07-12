@@ -23,12 +23,42 @@ import { buildSeasonShape, sameTotalEpisodeCountTieBreaker, scoreCandidateSeason
 import { chunkArray } from '../episode-release-refresh/refresh-logic';
 import { classifyMissingProviderSeries, ClassifyMissingProviderSeriesResult, MissingProviderCandidateSummary } from './missing-provider-candidates-logic';
 
-// MissingProviderCandidateSummary plus a poster — the shared type has no
-// image field (the whole-library batch report never rendered one), but the
-// in-app candidate-comparison screen needs one. Additive-only extension,
-// never a modified copy of the shared type.
+// MissingProviderCandidateSummary plus a poster and a normalized confidence
+// — the shared type has no image field (the whole-library batch report
+// never rendered one), but the in-app candidate-comparison screen needs
+// one. Additive-only extension, never a modified copy of the shared type.
+//
+// Two confidence fields, deliberately different scales, both real:
+//   - confidenceScore (inherited from MissingProviderCandidateSummary):
+//     tmdb-enrichment/scoring.ts's RAW 0-100 score (title match up to 50 +
+//     year match up to 30 + rank relevance up to 20), calibrated against
+//     that file's own AUTO_MATCH_MIN_SCORE=85 / NEEDS_REVIEW_MIN_SCORE=50
+//     thresholds. INTERNAL ONLY — stays 0-100 here because it's still fed
+//     into classifyMissingProviderSeries/detectCloseCompetitor/
+//     sameTotalEpisodeCountTieBreaker below, all of which are calibrated
+//     against the 0-100 scale. Never expose this field directly to an API
+//     response, mobile type, or persistence layer.
+//   - normalizedConfidence: the ONE canonical confidence representation
+//     for everything outside this module — 0 <= x <= 1. Every consumer
+//     across the app boundary (ProviderCandidateDto, mobile
+//     ProviderCandidate type, the confirm-identity request body,
+//     ProviderIdentityDecision.confidence) must use this field, never
+//     confidenceScore. See docs/migration-workbench-guide.md's confidence
+//     contract section for the full audit that found this exact
+//     un-normalized value reaching a 0..1-validated endpoint.
 export interface SearchedProviderCandidate extends MissingProviderCandidateSummary {
   posterUrl: string | null;
+  normalizedConfidence: number;
+}
+
+// tmdb-enrichment/scoring.ts's totalScore is a fixed 0-100 scale (see the
+// field comment above) — this is the one, single place that scale is ever
+// converted to the app-wide 0..1 canonical representation. Clamped
+// defensively even though scoreCandidates' own math should never exceed
+// 100 (title 50 + year 30 + rank 20) — a boundary conversion should never
+// trust an upstream invariant blindly.
+export function normalizeConfidenceScore(rawScore: number): number {
+  return Math.max(0, Math.min(1, rawScore / 100));
 }
 
 const MAX_CANDIDATES_TO_FETCH = 3;
@@ -118,6 +148,7 @@ export async function searchProviderCandidatesForSeries(input: SearchProviderCan
       year: parseYearFromDate(sc.result.first_air_date),
       posterUrl: tmdbImageUrl(sc.result.poster_path),
       confidenceScore: sc.breakdown.totalScore,
+      normalizedConfidence: normalizeConfidenceScore(sc.breakdown.totalScore),
       titleMatchType: sc.breakdown.titleMatchType,
       yearMatchType: sc.breakdown.yearMatchType,
       resultPosition: sc.breakdown.resultPosition,

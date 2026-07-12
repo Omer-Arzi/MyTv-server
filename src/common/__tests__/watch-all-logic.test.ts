@@ -68,8 +68,8 @@ describe('recomputeProgressAfterWatchAll', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.RETURNING,
       orderedEpisodes: [
-        { id: 'e1', airDate: PAST },
-        { id: 'e2', airDate: PAST },
+        { id: 'e1', airDate: PAST, seasonNumber: 1 },
+        { id: 'e2', airDate: PAST, seasonNumber: 1 },
       ],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,
@@ -81,7 +81,7 @@ describe('recomputeProgressAfterWatchAll', () => {
   it('is CAUGHT_UP when nothing released remains unwatched and the series is still returning', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.RETURNING,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,
     });
@@ -92,7 +92,7 @@ describe('recomputeProgressAfterWatchAll', () => {
   it('is COMPLETED when nothing released remains unwatched and the series has ended', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.ENDED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,
     });
@@ -102,7 +102,7 @@ describe('recomputeProgressAfterWatchAll', () => {
   it('is COMPLETED when the series was cancelled', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.CANCELLED,
-      orderedEpisodes: [{ id: 'e1', airDate: PAST }],
+      orderedEpisodes: [{ id: 'e1', airDate: PAST, seasonNumber: 1 }],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,
     });
@@ -113,8 +113,8 @@ describe('recomputeProgressAfterWatchAll', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.RETURNING,
       orderedEpisodes: [
-        { id: 'e1', airDate: PAST },
-        { id: 'e2', airDate: FUTURE },
+        { id: 'e1', airDate: PAST, seasonNumber: 1 },
+        { id: 'e2', airDate: FUTURE, seasonNumber: 1 },
       ],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,
@@ -127,8 +127,8 @@ describe('recomputeProgressAfterWatchAll', () => {
     const result = recomputeProgressAfterWatchAll({
       releaseStatus: ReleaseStatus.RETURNING,
       orderedEpisodes: [
-        { id: 'e1', airDate: PAST },
-        { id: 'e2', airDate: null },
+        { id: 'e1', airDate: PAST, seasonNumber: 1 },
+        { id: 'e2', airDate: null, seasonNumber: 1 },
       ],
       watchedEpisodeIds: new Set(['e1']),
       now: NOW,

@@ -88,7 +88,7 @@ async function main() {
   const episodesBySeriesId = new Map<string, OrderedEpisode[]>();
   for (const e of episodeRows) {
     const list = episodesBySeriesId.get(e.season.seriesId) ?? [];
-    list.push({ id: e.id, airDate: e.airDate });
+    list.push({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber });
     episodesBySeriesId.set(e.season.seriesId, list);
   }
 

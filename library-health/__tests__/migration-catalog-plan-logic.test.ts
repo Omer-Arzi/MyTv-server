@@ -65,4 +65,42 @@ describe('computeMatchedEpisodeCounts', () => {
     const result = computeMatchedEpisodeCounts(local, provider);
     expect(result).toEqual({ matchedWatchedCount: 24, matchedTotalCount: 24 });
   });
+
+  // Season 0 (Specials) never participates in derived progress — an
+  // unwatched Special must never keep resolveObjectiveMigrationStatus
+  // (migration-policy-logic.ts) from deriving COMPLETED/CAUGHT_UP for a
+  // Migration Workbench proposal.
+  it('excludes Season 0 from both matchedTotalCount and matchedWatchedCount, even when matched and watched', () => {
+    const local = [
+      { seasonNumber: 1, episodeNumber: 1, watched: true },
+      { seasonNumber: 1, episodeNumber: 2, watched: true },
+      { seasonNumber: 0, episodeNumber: 1, watched: true },
+    ];
+    const provider = [
+      { seasonNumber: 1, episodeNumber: 1 },
+      { seasonNumber: 1, episodeNumber: 2 },
+      { seasonNumber: 0, episodeNumber: 1 },
+    ];
+    const result = computeMatchedEpisodeCounts(local, provider);
+    expect(result).toEqual({ matchedWatchedCount: 2, matchedTotalCount: 2 });
+  });
+
+  it('reflects "full coverage" (100% watched) when only an unwatched Season 0 Special remains, all canonical episodes watched', () => {
+    const local = [
+      { seasonNumber: 1, episodeNumber: 1, watched: true },
+      { seasonNumber: 1, episodeNumber: 2, watched: true },
+      { seasonNumber: 0, episodeNumber: 1, watched: false },
+      { seasonNumber: 0, episodeNumber: 2, watched: false },
+    ];
+    const provider = [
+      { seasonNumber: 1, episodeNumber: 1 },
+      { seasonNumber: 1, episodeNumber: 2 },
+      { seasonNumber: 0, episodeNumber: 1 },
+      { seasonNumber: 0, episodeNumber: 2 },
+    ];
+    const result = computeMatchedEpisodeCounts(local, provider);
+    // matchedWatchedCount === matchedTotalCount -> resolveObjectiveMigrationStatus
+    // derives COMPLETED/CAUGHT_UP, unblocked by the 2 unwatched Specials.
+    expect(result).toEqual({ matchedWatchedCount: 2, matchedTotalCount: 2 });
+  });
 });

@@ -17,7 +17,13 @@ export class ConfirmIdentityDto {
   @IsString()
   providerId: string;
 
-  @ApiProperty({ example: 0.92, description: 'The candidate\'s confidence score from the search results — recorded for future staleness auditing.' })
+  @ApiProperty({
+    example: 0.8,
+    minimum: 0,
+    maximum: 1,
+    description:
+      'The candidate\'s confidenceScore from GET /:seriesId/candidates, unmodified — recorded for future staleness auditing. Must be the normalized 0..1 value from the search response, never a percentage (e.g. send 0.8, not 80).',
+  })
   @IsNumber()
   @Min(0)
   @Max(1)

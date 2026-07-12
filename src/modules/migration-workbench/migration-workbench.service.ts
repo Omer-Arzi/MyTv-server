@@ -11,13 +11,15 @@ import { runProviderConfirmationForDecision } from '../../../library-health/run-
 import { evaluateMigrationRollbackEligibility, buildMigrationRollbackPreview } from '../../../library-health/migration-rollback-logic';
 import { executeMigrationRollback, MigrationRollbackRefusedError } from '../../../library-health/migration-rollback-executor';
 import { searchProviderCandidatesForSeries } from '../../../library-health/search-provider-candidates-for-series';
-import { saveProviderIdentityDecision } from '../../../library-health/provider-identity-decisions-store';
+import { saveProviderIdentityDecision, reviewSeasonShrinkForDecision, NoDecisionToReviewError } from '../../../library-health/provider-identity-decisions-store';
 import { BatchManifest } from '../../../library-health/batch-manifest-logic';
 import { ProviderConfirmationPipelineReport } from '../../../library-health/provider-confirmation-pipeline-reports';
 import {
   classifyBatchManifestEntry,
   classifySkippedBlockedEntry,
   correctProposedStatusForProtection,
+  dedupeBySeriesId,
+  deriveProposalReasonCode,
   fromManualReviewCandidate,
   MigrationWorkbenchCategory,
   MigrationWorkbenchItem,
@@ -50,13 +52,17 @@ export class MigrationWorkbenchService {
 
   // The list view — a read-only projection of the library-health CLI
   // pipeline's own periodically-regenerated reports (batch manifest +
-  // pipeline report), never a live TMDb/TVmaze call. Same architectural
-  // choice this app already made for the DB-only Needs Attention v1: a
-  // screen loaded on every app open must stay fast and never burn API
-  // rate limit — a specific series' live, up-to-the-second proposal is
-  // what getProposal() is for, triggered by an explicit user tap. Because
-  // of this, the list can be up to as stale as the last CLI pipeline run —
-  // documented on the controller's @ApiOperation, not hidden.
+  // pipeline report), never a live TMDb/TVmaze call for the bulk of items.
+  // Same architectural choice this app already made for the DB-only Needs
+  // Attention v1: a screen loaded on every app open must stay fast and
+  // never burn API rate limit — a specific series' live, up-to-the-second
+  // proposal is what getProposal() is for, triggered by an explicit user
+  // tap. Because of this, the list can be up to as stale as the last CLI
+  // pipeline run — documented on the controller's @ApiOperation, not
+  // hidden. invalidateStaleItems() below corrects the specific, common
+  // ways that staleness is user-visibly WRONG (not just old) using cheap
+  // DB-only checks, with a tightly bounded live recompute only for the
+  // rarer case that genuinely needs one.
   async list(userId: string): Promise<MigrationWorkbenchItemDto[]> {
     const manifest = readJsonIfExists<BatchManifest>(BATCH_MANIFEST_PATH);
     const report = readJsonIfExists<ProviderConfirmationPipelineReport>(PIPELINE_REPORT_PATH);
@@ -85,8 +91,12 @@ export class MigrationWorkbenchService {
     // series is silently dropped rather than surfaced as a broken item.
     const knownSeriesIds = new Set(seriesRows.map((s) => s.id));
 
-    return items
-      .filter((i) => knownSeriesIds.has(i.seriesId))
+    const liveItems = await this.invalidateStaleItems(
+      userId,
+      dedupeBySeriesId(items.filter((i) => knownSeriesIds.has(i.seriesId))),
+    );
+
+    return liveItems
       .sort((a, b) => a.title.localeCompare(b.title))
       .map((i) => ({
         seriesId: i.seriesId,
@@ -96,6 +106,76 @@ export class MigrationWorkbenchService {
         reason: i.reason,
         proposal: i.proposal,
       }));
+  }
+
+  // How many series confirmed in the DB more recently than the last CLI
+  // pipeline run must never turn every Workbench screen load into an
+  // unbounded burst of live TMDb calls — bounds it to a small, human-paced
+  // number. In practice this is the count of series someone confirmed via
+  // "Find Provider" since the last CLI pipeline re-run, which is always a
+  // handful, never hundreds.
+  private static readonly MAX_LIVE_RECOMPUTE_PER_LIST = 10;
+
+  // Corrects cache staleness against canonical DB state, without a second
+  // classification engine. Two independent, cheap-first checks:
+  //
+  //   1. STALE_AFTER_SUCCESSFUL_MIGRATION — a non-rolled-back
+  //      MigrationHistory row for this series means it is fully resolved,
+  //      full stop, regardless of what category the cache says. Pure DB
+  //      lookup, no live call, removes the item entirely. This is the
+  //      "I already confirmed + migrated and it's still stuck in Needs
+  //      Attention" bug.
+  //
+  //   2. STALE_AFTER_IDENTITY_CONFIRMATION — a NO_RELIABLE_PROVIDER item
+  //      with a confirmed ProviderIdentityDecision (or already-matched
+  //      ExternalIds) on file is a direct contradiction: that category
+  //      means "no confirmed decision" by construction. Deliberately NOT
+  //      gated on comparing the decision's timestamp against the cache's
+  //      own generatedAt — a whole-library CLI pipeline run can take hours
+  //      between when it captures that timestamp and when it actually
+  //      writes a given series' entry, so the timestamp alone is not a
+  //      reliable staleness signal. Recomputed live via getProposal() —
+  //      the exact same canonical pipeline the explicit per-series tap
+  //      already uses — never a parallel classification path. Bounded by
+  //      MAX_LIVE_RECOMPUTE_PER_LIST; a recompute failure (e.g. missing
+  //      TMDB_ACCESS_TOKEN, a transient network error) keeps the cached
+  //      item rather than failing the whole list.
+  private async invalidateStaleItems(userId: string, items: MigrationWorkbenchItem[]): Promise<MigrationWorkbenchItem[]> {
+    if (items.length === 0) return items;
+    const seriesIds = items.map((i) => i.seriesId);
+
+    const [activeMigrations, decisions, matchedExternalIds] = await Promise.all([
+      this.prisma.migrationHistory.findMany({ where: { userId, seriesId: { in: seriesIds }, rolledBackAt: null }, select: { seriesId: true } }),
+      this.prisma.providerIdentityDecision.findMany({ where: { userId, seriesId: { in: seriesIds }, decision: 'confirm' }, select: { seriesId: true } }),
+      this.prisma.externalIds.findMany({ where: { seriesId: { in: seriesIds }, provider: { not: null }, providerId: { not: null } }, select: { seriesId: true } }),
+    ]);
+
+    const migratedSeriesIds = new Set(activeMigrations.map((m) => m.seriesId));
+    const confirmedSeriesIds = new Set([...decisions.map((d) => d.seriesId), ...matchedExternalIds.map((e) => e.seriesId)]);
+
+    const result: MigrationWorkbenchItem[] = [];
+    let recomputeBudget = MigrationWorkbenchService.MAX_LIVE_RECOMPUTE_PER_LIST;
+
+    for (const item of items) {
+      if (migratedSeriesIds.has(item.seriesId)) continue; // fully resolved — drop.
+
+      const looksStale = item.category === 'NO_RELIABLE_PROVIDER' && confirmedSeriesIds.has(item.seriesId);
+      if (!looksStale || recomputeBudget <= 0) {
+        result.push(item);
+        continue;
+      }
+      recomputeBudget--;
+
+      try {
+        const proposal = await this.getProposal(userId, item.seriesId);
+        if (!proposal.eligible && proposal.reason.startsWith('already fully migrated')) continue; // resolved via a no-op recompute — drop.
+        result.push({ seriesId: item.seriesId, title: item.title, category: proposal.category, reason: proposal.reason, proposal: proposal.proposal });
+      } catch {
+        result.push(item);
+      }
+    }
+
+    return result;
   }
 
   // "Find Provider" — a live TMDb search + score for one unresolved series,
@@ -148,6 +228,27 @@ export class MigrationWorkbenchService {
     return { seriesId, saved: true };
   }
 
+  // A second, deliberately SEPARATE explicit action from confirmIdentity —
+  // sets seasonShrinkReviewed on the existing decision, unlocking ONLY
+  // classifyMigrationConfirmation's realSeasonShrinkDetected hard floor
+  // (see provider-identity-decisions-store.ts::reviewSeasonShrinkForDecision).
+  // Confirming identity must never automatically imply this; catalog
+  // safety (orphan preservation, watched-mapping validation, PAUSED/DROPPED
+  // protection) is completely unaffected either way. Requires a confirmed
+  // identity to already exist.
+  async reviewSeasonShrink(userId: string, seriesId: string): Promise<{ seriesId: string; reviewed: true }> {
+    const series = await this.prisma.series.findUnique({ where: { id: seriesId } });
+    if (!series) throw new NotFoundException(`Series ${seriesId} not found`);
+
+    try {
+      await reviewSeasonShrinkForDecision(this.prisma, userId, seriesId);
+    } catch (err) {
+      if (err instanceof NoDecisionToReviewError) throw new BadRequestException(err.message);
+      throw err;
+    }
+    return { seriesId, reviewed: true };
+  }
+
   // The single-series live proposal — always a fresh TMDb/TVmaze fetch
   // (reusing runProviderConfirmationForDecision, the exact same function
   // the CLI pipeline calls), never trusted from the cached list-view
@@ -163,11 +264,14 @@ export class MigrationWorkbenchService {
 
     const { decision } = await findDecisionForSeries(this.prisma, userId, seriesId);
     if (!decision || decision.decision !== 'confirm') {
+      const { reasonCode, availableActions } = deriveProposalReasonCode({ kind: 'no-decision' });
       return {
         seriesId,
         title: series.title,
         eligible: false,
         category: 'NO_RELIABLE_PROVIDER',
+        reasonCode,
+        availableActions,
         reason: decision
           ? `decision on file is "${decision.decision}", not "confirm" — no live proposal to compute.`
           : 'no confirmed provider match for this series — identity must be confirmed (via the in-app provider search, or the library-health CLI review workflow) before a migration proposal can be computed.',
@@ -203,11 +307,14 @@ export class MigrationWorkbenchService {
     if (outcome.kind === 'dry-run-safe' || outcome.kind === 'applied') {
       const entry = outcome.entry;
       const category: MigrationWorkbenchCategory = entry.identityBand === 'HIGH_CONFIDENCE' && entry.preservedOrphanEpisodeCount === 0 ? 'READY_AUTOMATIC' : 'READY_FOR_CONFIRMATION';
+      const { reasonCode, availableActions } = deriveProposalReasonCode({ kind: 'eligible' });
       return {
         seriesId,
         title: series.title,
         eligible: true,
         category,
+        reasonCode,
+        availableActions,
         reason: entry.autoMigrationEligibilityReason,
         current,
         proposal: {
@@ -224,15 +331,28 @@ export class MigrationWorkbenchService {
     }
 
     if (outcome.kind === 'already-applied') {
-      return { seriesId, title: series.title, eligible: false, category: 'READY_AUTOMATIC', reason: 'already fully migrated — nothing left to propose.', current, proposal: null };
+      const { reasonCode, availableActions } = deriveProposalReasonCode({ kind: 'already-applied' });
+      return { seriesId, title: series.title, eligible: false, category: 'READY_AUTOMATIC', reasonCode, availableActions, reason: 'already fully migrated — nothing left to propose.', current, proposal: null };
     }
 
     if (outcome.kind === 'blocked') {
       const category: MigrationWorkbenchCategory = outcome.entry.operatingClassification === 'REVIEW_ALIGNMENT' ? 'NEEDS_EPISODE_REVIEW' : 'NO_RELIABLE_PROVIDER';
-      return { seriesId, title: series.title, eligible: false, category, reason: outcome.entry.reason, current, proposal: null };
+      const { reasonCode, availableActions } = deriveProposalReasonCode({ kind: 'blocked', operatingClassification: outcome.entry.operatingClassification, reasonText: outcome.entry.reason });
+      return { seriesId, title: series.title, eligible: false, category, reasonCode, availableActions, reason: outcome.entry.reason, current, proposal: null };
     }
 
-    return { seriesId, title: series.title, eligible: false, category: 'NO_RELIABLE_PROVIDER', reason: 'reason' in outcome.entry ? outcome.entry.reason : outcome.entry.message, current, proposal: null };
+    const { reasonCode, availableActions } = deriveProposalReasonCode({ kind: 'error' });
+    return {
+      seriesId,
+      title: series.title,
+      eligible: false,
+      category: 'NO_RELIABLE_PROVIDER',
+      reasonCode,
+      availableActions,
+      reason: 'reason' in outcome.entry ? outcome.entry.reason : outcome.entry.message,
+      current,
+      proposal: null,
+    };
   }
 
   // Confirm Migration — a REAL write. Reuses runProviderConfirmationForDecision
@@ -438,7 +558,10 @@ function toCandidateDto(candidate: Awaited<ReturnType<typeof searchProviderCandi
     posterUrl: candidate.posterUrl,
     episodeCount: candidate.totalEpisodeCount,
     seasonCount: candidate.providerSeasonShape?.seasonCount ?? null,
-    confidenceScore: candidate.confidenceScore,
+    // Canonical 0..1 value — never candidate.confidenceScore (that field is
+    // the internal 0-100 scoring scale, see SearchedProviderCandidate's doc
+    // comment in search-provider-candidates-for-series.ts).
+    confidenceScore: candidate.normalizedConfidence,
     titleMatchType: candidate.titleMatchType,
     yearMatchType: candidate.yearMatchType,
     explanation: explanationParts.join('; '),

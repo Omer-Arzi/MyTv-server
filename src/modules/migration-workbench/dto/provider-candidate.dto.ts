@@ -22,7 +22,13 @@ export class ProviderCandidateDto {
   @ApiPropertyOptional({ example: 5, nullable: true })
   seasonCount: number | null;
 
-  @ApiProperty({ example: 0.92, description: 'Combined title/year confidence score, 0..1.' })
+  @ApiProperty({
+    example: 0.8,
+    minimum: 0,
+    maximum: 1,
+    description:
+      'Combined title/year/rank confidence, normalized to 0..1 — the canonical confidence representation across this whole API (candidates, confirm-identity, and persisted decisions all use this same 0..1 scale). Multiply by 100 for display only, e.g. "80% confidence"; never send a 0-100 value back to POST /:seriesId/confirm-identity.',
+  })
   confidenceScore: number;
 
   @ApiProperty({ enum: ['exact', 'substring', 'fuzzy'], example: 'exact' })

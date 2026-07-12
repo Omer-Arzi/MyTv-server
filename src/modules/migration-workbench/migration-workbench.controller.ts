@@ -21,7 +21,8 @@ export class MigrationWorkbenchController {
   @ApiOperation({
     summary: 'List every series still requiring migration work, grouped into 4 categories',
     description:
-      'Reads the library-health CLI pipeline\'s own periodically-regenerated reports (batch manifest + provider-confirmation report) — never a live provider call, so this is fast but only as fresh as the last CLI run. ' +
+      'Reads the library-health CLI pipeline\'s own periodically-regenerated reports (batch manifest + provider-confirmation report) as a base, so most items are fast and involve no live provider call — but the result is always corrected against canonical DB state first: ' +
+      'a series with a completed (non-rolled-back) migration is removed even if the cache predates it, and a No Reliable Provider item with a confirmed identity decision on file is live-recomputed (bounded to 10 per call) rather than shown as a contradiction. ' +
       'READY_AUTOMATIC and READY_FOR_CONFIRMATION items carry a pre-computed proposal; NEEDS_EPISODE_REVIEW and NO_RELIABLE_PROVIDER do not — those need a human decision before any proposal can be computed at all. ' +
       'For an up-to-the-second proposal on one specific series, use GET /migration-workbench/:seriesId/proposal instead.',
   })
@@ -63,6 +64,17 @@ export class MigrationWorkbenchController {
   })
   confirmIdentity(@CurrentUser() user: RequestUser, @Param('seriesId') seriesId: string, @Body() body: ConfirmIdentityDto) {
     return this.migrationWorkbenchService.confirmIdentity(user.id, seriesId, body);
+  }
+
+  @Post(':seriesId/review-season-shrink')
+  @ApiOperation({
+    summary: 'Explicitly review and approve a season-structure mismatch (e.g. absolute-numbering collapse) for a confirmed series',
+    description:
+      'A second, separate action from confirm-identity — confirming identity never implies this. Unlocks ONLY the season-shrink safety floor; catalog validation, orphan preservation, and PAUSED/DROPPED protection are completely unaffected. ' +
+      'Requires a confirmed provider identity to already exist for this series. After calling this, re-fetch GET :seriesId/proposal to see the resulting proposal.',
+  })
+  reviewSeasonShrink(@CurrentUser() user: RequestUser, @Param('seriesId') seriesId: string) {
+    return this.migrationWorkbenchService.reviewSeasonShrink(user.id, seriesId);
   }
 
   @Post(':seriesId/confirm')

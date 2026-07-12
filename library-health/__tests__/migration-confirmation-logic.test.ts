@@ -111,6 +111,93 @@ describe('classifyMigrationConfirmation — BLOCKED_DESTRUCTIVE_RISK (identity n
   });
 });
 
+describe('classifyMigrationConfirmation — seasonShrinkReviewed (scoped override for the completed-series review batch)', () => {
+  it('still refuses a real season shrink when migrationIntent is set but seasonShrinkReviewed is NOT — the default, unreviewed state', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 3 shrank: 24 local episode(s) vs. 23 from the provider',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [orphan(3, 0)],
+      currentUserStatus: UserSeriesStatus.WATCHING,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED, seasonShrinkReviewed: false },
+    });
+    expect(result.classification).toBe('BLOCKED_DESTRUCTIVE_RISK');
+    expect(result.preservedOrphanEpisodes).toEqual([]);
+    expect(result.resolvedUserStatus).toBe(UserSeriesStatus.WATCHING);
+  });
+
+  it('proceeds to SAFE_MIGRATION_WITH_STATUS_OVERRIDE when a real season shrink is detected AND seasonShrinkReviewed is explicitly true, preserving every orphan', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 21 is missing entirely from the provider response',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: Array.from({ length: 468 }, (_, i) => orphan(2 + (i % 20), i)),
+      currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED, seasonShrinkReviewed: true },
+    });
+    expect(result.classification).toBe('SAFE_MIGRATION_WITH_STATUS_OVERRIDE');
+    expect(result.resolvedUserStatus).toBe(UserSeriesStatus.COMPLETED);
+    expect(result.preservedOrphanEpisodes).toHaveLength(468); // every orphan preserved, none dropped even at this scale
+    expect(result.reason).toContain('explicitly reviewed/approved');
+  });
+
+  it('seasonShrinkReviewed alone (without migrationIntent) never reaches a migration classification — the reachability gate still requires migrationIntent', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 3 shrank',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [orphan(3, 0)],
+      currentUserStatus: UserSeriesStatus.WATCHING,
+      migration: { migrationIntent: false, seasonShrinkReviewed: true },
+    });
+    expect(result.classification).toBe('BLOCKED_RISK'); // passthrough of baseClassification, untouched
+  });
+
+  it('seasonShrinkReviewed never rescues a failed title/year sanity check — identity floor stays absolute', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'candidate title does not resemble local title',
+      titleYearSanityPassed: false,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [],
+      currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED, seasonShrinkReviewed: true },
+    });
+    expect(result.classification).toBe('BLOCKED_DESTRUCTIVE_RISK');
+    expect(result.resolvedUserStatus).toBe(UserSeriesStatus.CAUGHT_UP);
+  });
+
+  it('DROPPED/PAUSED are still protected even when seasonShrinkReviewed and a statusOverride are both set', () => {
+    const result = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 3 shrank',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [orphan(3, 0)],
+      currentUserStatus: UserSeriesStatus.DROPPED,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED, seasonShrinkReviewed: true },
+    });
+    expect(result.classification).toBe('SAFE_MIGRATION_WITH_PRESERVED_ORPHANS');
+    expect(result.resolvedUserStatus).toBe(UserSeriesStatus.DROPPED); // override refused, protected status wins
+  });
+
+  it('omitting seasonShrinkReviewed entirely behaves identically to explicit false (backward compatible with every existing decision)', () => {
+    const withUndefined = classifyMigrationConfirmation({
+      baseClassification: 'BLOCKED_RISK',
+      baseReason: 'season 3 shrank',
+      titleYearSanityPassed: true,
+      realSeasonShrinkDetected: true,
+      orphanedWatchedEpisodes: [orphan(3, 0)],
+      currentUserStatus: UserSeriesStatus.WATCHING,
+      migration: { migrationIntent: true, statusOverride: UserSeriesStatus.COMPLETED },
+    });
+    expect(withUndefined.classification).toBe('BLOCKED_DESTRUCTIVE_RISK');
+  });
+});
+
 describe('classifyMigrationConfirmation — Doctor Who style small season-0 orphan migration', () => {
   it('classifies SAFE_MIGRATION_WITH_PRESERVED_ORPHANS, carries CAUGHT_UP forward, preserves the 1 orphan', () => {
     const result = classifyMigrationConfirmation({

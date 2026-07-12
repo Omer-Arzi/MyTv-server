@@ -226,7 +226,23 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
   try {
     const fetched = decision.provider === 'tmdb' ? await fetchTmdbCandidate(tmdb, providerId, localSeasonNumbers) : await fetchTvmazeCandidate(tvmaze, providerId);
 
-    const sanity = checkTitleYearSanity({ localTitle: decision.title, candidateTitle: fetched.candidateTitle, candidateYear: fetched.candidateYear });
+    const rawSanity = checkTitleYearSanity({ localTitle: decision.title, candidateTitle: fetched.candidateTitle, candidateYear: fetched.candidateYear });
+    // A source: 'app-confirmation' decision's providerId was never typed —
+    // it was selected by a human from a rendered list of real candidates
+    // (title, poster, year all visible) via the in-app Find Provider flow.
+    // That's a categorically stronger identity signal than the automated
+    // title-string check exists to protect against (a typo'd/stale id in
+    // the hand-edited decisions.json — see checkTitleYearSanity's doc
+    // comment). Bypassing ONLY this one check for that one source: every
+    // other safety floor (detectRealSeasonShrink, orphan preservation,
+    // catalog validation, PAUSED/DROPPED protection) is completely
+    // untouched below — explicit identity confirmation must never bypass
+    // those. The real computed similarity is preserved in the reason text
+    // for auditability even when bypassed.
+    const sanity =
+      decision.source === 'app-confirmation' && !rawSanity.passed
+        ? { passed: true, reason: `identity explicitly confirmed via app (source: app-confirmation) — automated title/year check would have failed: ${rawSanity.reason}` }
+        : rawSanity;
     const fullLocalEpisodes = await loadFullLocalEpisodes(prisma, userId, local.seriesId);
     const comparison = compareSeriesCatalog({
       localEpisodes: fullLocalEpisodes,
@@ -275,7 +291,7 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
           realSeasonShrinkDetected,
           orphanedWatchedEpisodes,
           currentUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
-          migration: { migrationIntent: true, statusOverride: decision.statusOverride },
+          migration: { migrationIntent: true, statusOverride: decision.statusOverride, seasonShrinkReviewed: decision.seasonShrinkReviewed },
         })
       : null;
     const migrationClassificationForReport = migrationResult
@@ -304,8 +320,19 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
           hasPendingCatalogWork: false,
         }),
       };
+      // REVIEW_ALIGNMENT means identity is fine and a human needs to review
+      // the CATALOG shape (season shrink/numbering risk) — already reported
+      // precisely via `entry` above (skippedBlockedSeries ->
+      // NEEDS_EPISODE_REVIEW). nextManualReviewCandidates exists for the
+      // opposite case: series that need a NEW provider candidate search
+      // (see this file's top-of-file doc comment). Building one here too
+      // for a REVIEW_ALIGNMENT outcome would report the same series twice —
+      // once correctly as NEEDS_EPISODE_REVIEW, once redundantly as the
+      // generic NO_RELIABLE_PROVIDER fromManualReviewCandidate() always
+      // produces — a real duplicate-listing bug this guard prevents.
       const nextManualReviewCandidate =
-        decisionResult.classification === 'BLOCKED_RISK' || decisionResult.classification === 'NEEDS_MANUAL_REVIEW' || migrationClassificationForReport === 'BLOCKED_DESTRUCTIVE_RISK'
+        entry.operatingClassification !== 'REVIEW_ALIGNMENT' &&
+        (decisionResult.classification === 'BLOCKED_RISK' || decisionResult.classification === 'NEEDS_MANUAL_REVIEW' || migrationClassificationForReport === 'BLOCKED_DESTRUCTIVE_RISK')
           ? { title: decision.title, seriesId: local.seriesId, reason: `classified ${migrationClassificationForReport ?? decisionResult.classification} — ${reason}` }
           : undefined;
       return { kind: 'blocked', entry, nextManualReviewCandidate };
@@ -421,7 +448,18 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
     const wouldChangeProgress =
       (local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN) !== unifiedResolvedUserStatus || (local.progress?.nextEpisodeId ?? null) !== unifiedResolvedNextEpisodeId;
     const hasCatalogWorkPending = catalogInsertPlan.episodesToInsert.length > 0;
-    const isNoOp = alreadyMatchedProvider && unifiedEpisodeUpdateCount === 0 && unifiedPosterUpdate === null && !wouldChangeProgress && !hasCatalogWorkPending;
+    // Previously never written at all (Series.releaseStatus stayed exactly
+    // as it was before the migration, no matter what the provider actually
+    // reported) — a real gap: a userStatus of COMPLETED derived/overridden
+    // here could never survive a later progress-reconciliation pass, since
+    // deriveUserStatusFromNextEpisode's isFinished check reads
+    // Series.releaseStatus directly, and reconciliation has no notion of a
+    // migration's statusOverride — it would see a non-ENDED/CANCELLED
+    // releaseStatus and "fix" COMPLETED back down to CAUGHT_UP. Syncing
+    // this from the exact fetched.releaseStatus this apply already paid to
+    // fetch closes that gap generally, not just for one series.
+    const releaseStatusWouldChange = local.releaseStatus !== fetched.releaseStatus;
+    const isNoOp = alreadyMatchedProvider && unifiedEpisodeUpdateCount === 0 && unifiedPosterUpdate === null && !wouldChangeProgress && !hasCatalogWorkPending && !releaseStatusWouldChange;
 
     const operatingClassification = classifyMigrationOperatingOutcome({
       providerFetchFailed: false,
@@ -532,6 +570,10 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
         await tx.series.update({ where: { id: local.seriesId }, data: { posterUrl: unifiedPosterUpdate.to } });
       }
 
+      if (releaseStatusWouldChange) {
+        await tx.series.update({ where: { id: local.seriesId }, data: { releaseStatus: fetched.releaseStatus } });
+      }
+
       for (const update of unifiedEpisodeUpdates) {
         const data: Record<string, unknown> = {};
         if (update.changes.title !== undefined) data.title = update.changes.title;
@@ -615,7 +657,7 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
           providerBefore: local.externalIds ? { provider: local.externalIds.provider, providerId: local.externalIds.providerId, tmdbId: local.externalIds.tmdbId } : Prisma.JsonNull,
           providerAfter: { provider: unifiedExternalIdsUpdate.provider, providerId: unifiedExternalIdsUpdate.providerId, tmdbId: unifiedExternalIdsUpdate.tmdbId ?? null },
           releaseStatusBefore: local.releaseStatus,
-          releaseStatusAfter: local.releaseStatus,
+          releaseStatusAfter: fetched.releaseStatus,
           userStatusBefore: fromStatus,
           userStatusAfter: finalStatus,
           nextEpisodeIdBefore: fromNextEpisodeId,

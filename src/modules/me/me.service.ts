@@ -6,11 +6,14 @@ import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
 import { RecentlyWatchedItemDto, RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
+import { HavenStartedYetItemDto } from './dto/haven-started-yet-item.dto';
 import {
   computeRemainingEpisodesAfterNext,
+  deriveHavenStartedYetCandidates,
   filterNonStaleWatchNextCandidates,
   filterTrustedStaleCandidates,
   groupOrderedEpisodesBySeriesId,
+  sortHavenStartedYetResults,
 } from './me-query-helpers';
 import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 
@@ -177,6 +180,76 @@ export class MeService {
       lastWatchedAt: p.lastWatchedAt,
       nextEpisode: toEpisodeSummary(p.nextEpisode),
       userStatus: p.userStatus,
+    }));
+  }
+
+  // Derived Home section, not a persistent status — see
+  // deriveHavenStartedYetCandidates for the full eligibility contract.
+  // Queries every WATCHLIST series' full episode list (need every episode,
+  // not just watched ones, to determine "zero watches" and "at least one
+  // released regular episode" for series that have never been touched) plus
+  // this user's watches scoped to just those series, in two queries rather
+  // than one-per-series.
+  async getHavenStartedYet(userId: string): Promise<HavenStartedYetItemDto[]> {
+    const progress = await this.prisma.userSeriesProgress.findMany({
+      where: { userId, userStatus: UserSeriesStatus.WATCHLIST },
+      include: {
+        series: {
+          include: {
+            externalIds: true,
+            seasons: { include: { episodes: true } },
+          },
+        },
+      },
+    });
+    if (progress.length === 0) return [];
+
+    const seriesIds = progress.map((p) => p.seriesId);
+    const watches = await this.prisma.episodeWatch.findMany({
+      where: { userId, episode: { season: { seriesId: { in: seriesIds } } } },
+      select: { episodeId: true },
+    });
+    const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
+
+    const candidates = progress.map((p) => ({
+      seriesId: p.seriesId,
+      seriesTitle: p.series.title,
+      userStatus: p.userStatus,
+      externalIds: p.series.externalIds ? { provider: p.series.externalIds.provider, providerId: p.series.externalIds.providerId } : null,
+      episodes: p.series.seasons.flatMap((season) =>
+        season.episodes.map((episode) => ({
+          id: episode.id,
+          seasonId: episode.seasonId,
+          seasonNumber: season.seasonNumber,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          overview: episode.overview,
+          airDate: episode.airDate,
+          runtimeMinutes: episode.runtimeMinutes,
+          imageUrl: episode.imageUrl,
+        })),
+      ),
+    }));
+
+    const results = deriveHavenStartedYetCandidates(candidates, watchedEpisodeIds);
+    const titleBySeriesId = new Map(progress.map((p) => [p.seriesId, p.series.title]));
+    const sorted = sortHavenStartedYetResults(results, titleBySeriesId);
+    const seriesById = new Map(progress.map((p) => [p.seriesId, p.series]));
+
+    return sorted.map((r) => ({
+      series: toSeriesSummary(seriesById.get(r.seriesId)!),
+      latestReleasedRegularEpisode: {
+        id: r.latestReleasedRegularEpisode.id,
+        seasonId: r.latestReleasedRegularEpisode.seasonId,
+        seasonNumber: r.latestReleasedRegularEpisode.seasonNumber,
+        episodeNumber: r.latestReleasedRegularEpisode.episodeNumber,
+        title: r.latestReleasedRegularEpisode.title,
+        overview: r.latestReleasedRegularEpisode.overview,
+        airDate: r.latestReleasedRegularEpisode.airDate,
+        runtimeMinutes: r.latestReleasedRegularEpisode.runtimeMinutes,
+        imageUrl: r.latestReleasedRegularEpisode.imageUrl,
+      },
+      releasedRegularEpisodeCount: r.releasedRegularEpisodeCount,
     }));
   }
 }

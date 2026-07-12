@@ -1,13 +1,16 @@
 import { UserSeriesStatus } from '@prisma/client';
 import {
   computeRemainingEpisodesAfterNext,
+  deriveHavenStartedYetCandidates,
   filterNonStaleWatchNextCandidates,
   filterReleasedNextEpisodes,
   filterTrustedStaleCandidates,
   groupOrderedEpisodesBySeriesId,
+  HavenStartedYetCandidate,
   isTrustedStaleCandidate,
   OrderedEpisodeForRemainingCount,
   ProgressWithNextEpisode,
+  sortHavenStartedYetResults,
   StaleCandidateProgress,
 } from '../me-query-helpers';
 import { EPISODE_NUMBERING_RISK_LIST_TITLES, KNOWN_SEASON_SHIFT_ORPHAN_TITLES, PROVIDER_STRUCTURE_MISMATCH_TITLES } from '../../../common/stale-series-trust';
@@ -360,5 +363,104 @@ describe('groupOrderedEpisodesBySeriesId', () => {
 
     expect(computeRemainingEpisodesAfterNext(grouped.get('series-a') ?? [], 'a1', new Set())).toBe(2);
     expect(computeRemainingEpisodesAfterNext(grouped.get('series-b') ?? [], 'b2', new Set())).toBe(0);
+  });
+});
+
+describe('deriveHavenStartedYetCandidates / sortHavenStartedYetResults', () => {
+  const HS_NOW = new Date('2026-07-12T00:00:00.000Z');
+
+  function ep(id: string, seasonNumber: number, episodeNumber: number, airDate: Date | null) {
+    return { id, seasonId: `season-${seasonNumber}`, seasonNumber, episodeNumber, title: null, overview: null, airDate, runtimeMinutes: null, imageUrl: null };
+  }
+
+  function candidate(overrides: Partial<HavenStartedYetCandidate> = {}): HavenStartedYetCandidate {
+    return {
+      seriesId: 's1',
+      seriesTitle: 'Some Watchlisted Show',
+      userStatus: UserSeriesStatus.WATCHLIST,
+      externalIds: { provider: 'tmdb', providerId: '123' },
+      episodes: [ep('e1', 1, 1, PAST)],
+      ...overrides,
+    };
+  }
+
+  it('includes an eligible WATCHLIST candidate with a released regular episode, zero watches, and a confirmed provider', () => {
+    const result = deriveHavenStartedYetCandidates([candidate()], new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0].seriesId).toBe('s1');
+    expect(result[0].releasedRegularEpisodeCount).toBe(1);
+  });
+
+  it('excludes a series whose userStatus is not WATCHLIST — only eligible Watchlist series appear', () => {
+    for (const status of [UserSeriesStatus.WATCHING, UserSeriesStatus.CAUGHT_UP, UserSeriesStatus.COMPLETED, UserSeriesStatus.PAUSED, UserSeriesStatus.DROPPED, UserSeriesStatus.UNKNOWN]) {
+      const result = deriveHavenStartedYetCandidates([candidate({ userStatus: status })], new Set());
+      expect(result).toEqual([]);
+    }
+  });
+
+  it('excludes a series with any watched episode — already-started series disappear immediately, including via a Specials watch', () => {
+    const withRegularWatch = deriveHavenStartedYetCandidates([candidate()], new Set(['e1']));
+    expect(withRegularWatch).toEqual([]);
+
+    const withSpecialWatch = deriveHavenStartedYetCandidates(
+      [candidate({ episodes: [ep('e1', 1, 1, PAST), ep('s1e0', 0, 1, PAST)] })],
+      new Set(['s1e0']),
+    );
+    expect(withSpecialWatch).toEqual([]); // watching only the special still counts as "started"
+  });
+
+  it('excludes a series with no released episodes at all — unreleased series never appear', () => {
+    const result = deriveHavenStartedYetCandidates([candidate({ episodes: [ep('e1', 1, 1, FUTURE)] })], new Set());
+    expect(result).toEqual([]);
+  });
+
+  it('excludes a series whose only released episodes are Specials (season 0) — Specials alone never qualify', () => {
+    const result = deriveHavenStartedYetCandidates([candidate({ episodes: [ep('s0e1', 0, 1, PAST), ep('s0e2', 0, 2, PAST)] })], new Set());
+    expect(result).toEqual([]);
+  });
+
+  it('includes a series with a released Special AND a released regular episode, driven only by the regular one', () => {
+    const result = deriveHavenStartedYetCandidates([candidate({ episodes: [ep('s0e1', 0, 1, PAST), ep('e1', 1, 1, PAST)] })], new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0].releasedRegularEpisodeCount).toBe(1); // the Special is never counted
+  });
+
+  it('excludes a series with no confirmed provider mapping — provider-unconfirmed series never appear', () => {
+    expect(deriveHavenStartedYetCandidates([candidate({ externalIds: null })], new Set())).toEqual([]);
+    expect(deriveHavenStartedYetCandidates([candidate({ externalIds: { provider: null, providerId: null } })], new Set())).toEqual([]);
+    expect(deriveHavenStartedYetCandidates([candidate({ externalIds: { provider: 'tmdb', providerId: null } })], new Set())).toEqual([]);
+  });
+
+  it('excludes a series on the known episode-numbering/season-shift risk list — same Home-eligibility trust gate as Watch Next', () => {
+    const riskyTitle = EPISODE_NUMBERING_RISK_LIST_TITLES[0] ?? KNOWN_SEASON_SHIFT_ORPHAN_TITLES[0] ?? PROVIDER_STRUCTURE_MISMATCH_TITLES[0];
+    const result = deriveHavenStartedYetCandidates([candidate({ seriesTitle: riskyTitle })], new Set());
+    expect(result).toEqual([]);
+  });
+
+  it('picks the most recently released regular episode when multiple are released — used for both sort and display', () => {
+    const older = ep('e1', 1, 1, new Date('2024-01-01'));
+    const newer = ep('e2', 1, 2, new Date('2025-06-01'));
+    const result = deriveHavenStartedYetCandidates([candidate({ episodes: [older, newer] })], new Set());
+    expect(result[0].latestReleasedRegularEpisode.id).toBe('e2');
+  });
+
+  it('sorts newest released first, alphabetically (case-insensitive) on ties', () => {
+    const results = [
+      { seriesId: 'b', latestReleasedRegularEpisode: { airDate: new Date('2026-01-01') } },
+      { seriesId: 'a-tie-1', latestReleasedRegularEpisode: { airDate: new Date('2025-01-01') } },
+      { seriesId: 'a-tie-2', latestReleasedRegularEpisode: { airDate: new Date('2025-01-01') } },
+    ];
+    const titleBySeriesId = new Map([
+      ['b', 'Zzz Newest Show'],
+      ['a-tie-1', 'beta show'],
+      ['a-tie-2', 'Alpha Show'],
+    ]);
+    const sorted = sortHavenStartedYetResults(results, titleBySeriesId);
+    expect(sorted.map((r) => r.seriesId)).toEqual(['b', 'a-tie-2', 'a-tie-1']); // newest first, then Alpha before beta
+  });
+
+  it('is unaffected by dates in the future relative to "now" — respects the provided now parameter, never treats a future release as already out', () => {
+    const result = deriveHavenStartedYetCandidates([candidate({ episodes: [ep('e1', 1, 1, HS_NOW)] })], new Set(), new Date(HS_NOW.getTime() - 1000));
+    expect(result).toEqual([]);
   });
 });

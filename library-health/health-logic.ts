@@ -261,7 +261,7 @@ export function classifySeriesHealth(input: SeriesHealthInput): SeriesHealthResu
   // mark-watched flow does (findFirstUnwatchedEpisodeId) and comparing.
   const orderedEpisodes: OrderedEpisodeForNextLookup[] = [...input.episodes]
     .sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber)
-    .map((e) => ({ id: e.id, airDate: e.airDate }));
+    .map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.seasonNumber }));
   const watchedIds = new Set(input.episodes.filter((e) => e.watched).map((e) => e.id));
   const computedNextEpisodeId = findFirstUnwatchedEpisodeId(orderedEpisodes, watchedIds, now);
 

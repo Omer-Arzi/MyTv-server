@@ -5,8 +5,8 @@ import { EPISODE_NUMBERING_RISK_LIST_TITLES } from '../../src/common/stale-serie
 const PAST = new Date('2000-01-01');
 const FUTURE = new Date('2999-01-01');
 
-function ep(id: string, airDate: Date | null) {
-  return { id, airDate };
+function ep(id: string, airDate: Date | null, seasonNumber = 1) {
+  return { id, airDate, seasonNumber };
 }
 
 function baseInput(overrides: Partial<Parameters<typeof reconcileSeriesProgress>[0]> = {}): Parameters<typeof reconcileSeriesProgress>[0] {
@@ -182,6 +182,62 @@ describe('reconcileSeriesProgress — status derivation correctness', () => {
       }),
     );
     expect(result).toEqual({ kind: 'unchanged', computed: { userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 'e2' } });
+  });
+});
+
+describe('reconcileSeriesProgress — Season 0 (Specials) never participates in derived progress', () => {
+  it('ended show, all canonical episodes watched, unwatched Specials only -> reconciles to COMPLETED', () => {
+    const result = reconcileSeriesProgress(
+      baseInput({
+        currentUserStatus: UserSeriesStatus.WATCHING,
+        currentNextEpisodeId: 'special-1',
+        orderedEpisodes: [ep('special-1', PAST, 0), ep('e1', PAST, 1), ep('e2', PAST, 1)],
+        watchedEpisodeIds: new Set(['e1', 'e2']),
+        releaseStatus: ReleaseStatus.ENDED,
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'changed',
+      from: { userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 'special-1' },
+      to: { userStatus: UserSeriesStatus.COMPLETED, nextEpisodeId: null },
+      mismatchType: 'stale-watching-with-no-released-unwatched-episode',
+    });
+  });
+
+  it('returning show, all currently-released canonical episodes watched, unwatched Specials only -> reconciles to CAUGHT_UP', () => {
+    const result = reconcileSeriesProgress(
+      baseInput({
+        currentUserStatus: UserSeriesStatus.WATCHING,
+        currentNextEpisodeId: 'special-1',
+        orderedEpisodes: [ep('special-1', PAST, 0), ep('e1', PAST, 1), ep('e2', PAST, 1)],
+        watchedEpisodeIds: new Set(['e1', 'e2']),
+        releaseStatus: ReleaseStatus.RETURNING,
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'changed',
+      from: { userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 'special-1' },
+      to: { userStatus: UserSeriesStatus.CAUGHT_UP, nextEpisodeId: null },
+      mismatchType: 'stale-watching-with-no-released-unwatched-episode',
+    });
+  });
+
+  it('a released, unwatched canonical episode is still found as next -> WATCHING, Season 0 ignored regardless of position', () => {
+    const result = reconcileSeriesProgress(
+      baseInput({
+        currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+        currentNextEpisodeId: null,
+        orderedEpisodes: [ep('e1', PAST, 1), ep('special-1', PAST, 0), ep('s2e5', PAST, 2)],
+        watchedEpisodeIds: new Set(['e1']),
+        releaseStatus: ReleaseStatus.RETURNING,
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'changed',
+      from: { userStatus: UserSeriesStatus.CAUGHT_UP, nextEpisodeId: null },
+      to: { userStatus: UserSeriesStatus.WATCHING, nextEpisodeId: 's2e5' },
+      mismatchType: 'stale-caught-up-with-released-unwatched-episode',
+    });
   });
 });
 

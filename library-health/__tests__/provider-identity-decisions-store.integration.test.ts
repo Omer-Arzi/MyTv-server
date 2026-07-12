@@ -7,7 +7,7 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
-import { findDecisionForSeries, loadDecisionsFromDb, saveProviderIdentityDecision } from '../provider-identity-decisions-store';
+import { findDecisionForSeries, loadDecisionsFromDb, NoDecisionToReviewError, reviewSeasonShrinkForDecision, saveProviderIdentityDecision } from '../provider-identity-decisions-store';
 
 const describeIfDbConfigured = process.env.DATABASE_URL ? describe : describe.skip;
 
@@ -56,6 +56,8 @@ describeIfDbConfigured('provider-identity-decisions-store (integration, real Pos
       providerId: '999',
       migrationIntent: false,
       statusOverride: undefined,
+      seasonShrinkReviewed: false,
+      source: 'app-confirmation',
       notes: undefined,
     });
   });
@@ -99,6 +101,8 @@ describeIfDbConfigured('provider-identity-decisions-store (integration, real Pos
       providerId: '222',
       migrationIntent: false,
       statusOverride: undefined,
+      seasonShrinkReviewed: false,
+      source: 'app-confirmation',
       notes: undefined,
     });
   });
@@ -114,5 +118,48 @@ describeIfDbConfigured('provider-identity-decisions-store (integration, real Pos
     expect(rows).toHaveLength(1);
     expect(rows[0].providerId).toBe('333');
     expect(rows[0].source).toBe('app-confirmation');
+  });
+
+  describe('reviewSeasonShrinkForDecision', () => {
+    it('sets migrationIntent and seasonShrinkReviewed on an existing confirmed decision, without touching statusOverride', async () => {
+      const user = await createFixtureUser();
+      const series = await createFixtureSeries('Season Shrink Review Test Show');
+      await saveProviderIdentityDecision(prisma, { userId: user.id, seriesId: series.id, provider: 'tmdb', providerId: '259140', confidence: 0.66 });
+
+      const updated = await reviewSeasonShrinkForDecision(prisma, user.id, series.id);
+
+      expect(updated.migrationIntent).toBe(true);
+      expect(updated.seasonShrinkReviewed).toBe(true);
+      expect(updated.statusOverride).toBeNull(); // deliberately never set — no manual status picker
+    });
+
+    it('throws NoDecisionToReviewError when no decision exists at all', async () => {
+      const user = await createFixtureUser();
+      const series = await createFixtureSeries('No Decision Test Show');
+
+      await expect(reviewSeasonShrinkForDecision(prisma, user.id, series.id)).rejects.toThrow(NoDecisionToReviewError);
+    });
+
+    it('throws NoDecisionToReviewError when a decision exists but is not "confirm"', async () => {
+      const user = await createFixtureUser();
+      const series = await createFixtureSeries('Deferred Decision Test Show');
+      await prisma.providerIdentityDecision.create({ data: { userId: user.id, seriesId: series.id, decision: 'defer', source: 'cli-decisions-file' } });
+
+      await expect(reviewSeasonShrinkForDecision(prisma, user.id, series.id)).rejects.toThrow(NoDecisionToReviewError);
+    });
+
+    it('is idempotent — calling it twice leaves the same end state, no duplicate rows, no error', async () => {
+      const user = await createFixtureUser();
+      const series = await createFixtureSeries('Idempotent Season Shrink Review Test Show');
+      await saveProviderIdentityDecision(prisma, { userId: user.id, seriesId: series.id, provider: 'tmdb', providerId: '259140', confidence: 0.66 });
+
+      await reviewSeasonShrinkForDecision(prisma, user.id, series.id);
+      const second = await reviewSeasonShrinkForDecision(prisma, user.id, series.id);
+
+      expect(second.migrationIntent).toBe(true);
+      expect(second.seasonShrinkReviewed).toBe(true);
+      const rows = await prisma.providerIdentityDecision.findMany({ where: { userId: user.id, seriesId: series.id } });
+      expect(rows).toHaveLength(1);
+    });
   });
 });

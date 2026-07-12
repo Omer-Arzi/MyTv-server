@@ -31,6 +31,17 @@
 // check. Structural mismatch is a migration's normal cost of doing
 // business; identity mismatch is a different problem migration intent
 // must never paper over — see BLOCKED_DESTRUCTIVE_RISK below.
+//
+// A real (non-zero) season shrink/renumbering is ALSO never bypassed by
+// migrationIntent alone — that is its own hard floor (see
+// realSeasonShrinkDetected below), added after an audit found
+// migrationIntent could otherwise mask a genuine numbering-collision risk.
+// The one way past THAT specific floor is a second, narrower, explicit
+// per-decision flag, seasonShrinkReviewed — a human acknowledging they
+// reviewed this exact title's renumbering pattern and approved migrating
+// anyway. It still only ever loosens the shrink check, never the identity
+// check, and every orphan is still guaranteed preserved untouched exactly
+// as above.
 
 import { UserSeriesStatus } from '@prisma/client';
 import { DryRunClassification, SupportedProvider } from './provider-confirmation-decisions-logic';
@@ -61,6 +72,10 @@ export function isProtectedMigrationStatus(status: UserSeriesStatus): boolean {
 export interface MigrationIntentInput {
   migrationIntent: boolean;
   statusOverride?: UserSeriesStatus;
+  // Separate, narrower override from migrationIntent — see
+  // realSeasonShrinkDetected's field comment below for exactly what this
+  // unlocks and why it has to be its own explicit flag.
+  seasonShrinkReviewed?: boolean;
 }
 
 // Shared vocabulary for "why did the resolved userStatus end up this way,"
@@ -87,6 +102,12 @@ export interface ClassifyMigrationConfirmationInput {
   // catalog shape that doesn't actually line up. Without this check, an
   // explicit migrationIntent: true could previously have masked a genuine
   // structural risk the non-migration pipeline would correctly block on.
+  // migrationIntent alone still can never bypass this — the ONLY way past
+  // it is migration.seasonShrinkReviewed, a second, narrower, explicit
+  // flag a human sets per-decision after actually reviewing THIS title's
+  // specific renumbering pattern (see the "second hard floor" branch
+  // below). The title/year identity check above this one remains
+  // completely non-bypassable regardless of either flag.
   realSeasonShrinkDetected: boolean;
   // The FULL, unfiltered orphan list — season-0 specials, split/merge
   // tails, and any real-season scattered orphans alike. Migration mode
@@ -147,13 +168,19 @@ export function classifyMigrationConfirmation(input: ClassifyMigrationConfirmati
     };
   }
 
-  // Second hard floor — never bypassed by migrationIntent, mirroring the
-  // title/year sanity check immediately above. See the field comment on
-  // realSeasonShrinkDetected for why this was missing and why it matters.
-  if (input.realSeasonShrinkDetected) {
+  // Second hard floor — never bypassed by migrationIntent alone, mirroring
+  // the title/year sanity check immediately above. See the field comment
+  // on realSeasonShrinkDetected for why this was missing and why it
+  // matters. The ONLY way past this specific floor is a second, narrower,
+  // explicit per-decision flag (seasonShrinkReviewed) — a human
+  // acknowledging they reviewed THIS title's specific renumbering pattern
+  // and approved migrating anyway, every orphan still preserved untouched
+  // exactly as migration mode already guarantees below. Never inferred
+  // from migrationIntent, never batch-defaulted.
+  if (input.realSeasonShrinkDetected && !input.migration.seasonShrinkReviewed) {
     return {
       classification: 'BLOCKED_DESTRUCTIVE_RISK',
-      reason: `migrationIntent is set, but a real (non-zero) season shrank or disappeared relative to the provider (${input.baseReason}) — numbering-collision risk, not an orphan-pattern question; migration mode refuses to proceed regardless of intent.`,
+      reason: `migrationIntent is set, but a real (non-zero) season shrank or disappeared relative to the provider (${input.baseReason}) — numbering-collision risk, not an orphan-pattern question; migration mode refuses to proceed regardless of intent unless seasonShrinkReviewed is also explicitly set.`,
       statusSource: 'derived',
       resolvedUserStatus: input.currentUserStatus,
       preservedOrphanEpisodes: [],
@@ -184,6 +211,7 @@ export function classifyMigrationConfirmation(input: ClassifyMigrationConfirmati
   }
 
   const preservedOrphanEpisodes = input.orphanedWatchedEpisodes;
+  const seasonShrinkNote = input.realSeasonShrinkDetected ? ' a real season shrink was detected and explicitly reviewed/approved via seasonShrinkReviewed;' : '';
 
   // hasOverride (and not protected) is the signal that distinguishes the
   // two positive migration tiers: an explicit override means the human
@@ -195,7 +223,7 @@ export function classifyMigrationConfirmation(input: ClassifyMigrationConfirmati
   if (hasOverride && !isProtected) {
     return {
       classification: 'SAFE_MIGRATION_WITH_STATUS_OVERRIDE',
-      reason: `provider identity confirmed; ${preservedOrphanEpisodes.length} orphaned watched episode(s) will be preserved untouched; ${statusNote}.`,
+      reason: `provider identity confirmed;${seasonShrinkNote} ${preservedOrphanEpisodes.length} orphaned watched episode(s) will be preserved untouched; ${statusNote}.`,
       statusSource,
       resolvedUserStatus,
       preservedOrphanEpisodes,
@@ -204,7 +232,7 @@ export function classifyMigrationConfirmation(input: ClassifyMigrationConfirmati
 
   return {
     classification: 'SAFE_MIGRATION_WITH_PRESERVED_ORPHANS',
-    reason: `provider identity confirmed; ${preservedOrphanEpisodes.length} orphaned watched episode(s) will be preserved untouched; ${statusNote}.`,
+    reason: `provider identity confirmed;${seasonShrinkNote} ${preservedOrphanEpisodes.length} orphaned watched episode(s) will be preserved untouched; ${statusNote}.`,
     statusSource,
     resolvedUserStatus,
     preservedOrphanEpisodes,

@@ -363,6 +363,40 @@ describe('compareSeriesCatalog', () => {
     expect(result.classification).toBe('NEW_RELEASE_AVAILABLE');
     expect(result.seasonZeroReason).toBeNull();
   });
+
+  // Season 0 (Specials) never participates in derived progress — a Special
+  // never becomes the proposed next episode, and never keeps a series from
+  // deriving COMPLETED/CAUGHT_UP, even when it's the only unwatched thing.
+  it('never proposes an unwatched, released Season 0 episode as next', () => {
+    const localEpisodes = [
+      local({ seasonNumber: 1, episodeNumber: 1, watched: true }),
+      local({ seasonNumber: 0, episodeNumber: 1, watched: false }),
+    ];
+    const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 1 }), provider({ seasonNumber: 0, episodeNumber: 1 })];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, currentUserStatus: UserSeriesStatus.WATCHING, currentReleaseStatus: ReleaseStatus.ENDED, providerReleaseStatus: ReleaseStatus.ENDED });
+
+    expect(result.proposedNextEpisodeId).toBeNull();
+    expect(result.proposedNextEpisodeLabel).toBeNull();
+    expect(result.proposedUserStatus).toBe(UserSeriesStatus.COMPLETED);
+  });
+
+  it('skips an unwatched Season 0 episode and proposes the real next canonical episode', () => {
+    const localEpisodes = [
+      local({ seasonNumber: 0, episodeNumber: 1, watched: false }),
+      local({ seasonNumber: 1, episodeNumber: 1, watched: true }),
+    ];
+    const providerEpisodes = [
+      provider({ seasonNumber: 0, episodeNumber: 1 }),
+      provider({ seasonNumber: 1, episodeNumber: 1 }),
+      provider({ seasonNumber: 1, episodeNumber: 2, airDate: PAST }),
+    ];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, currentUserStatus: UserSeriesStatus.WATCHING });
+
+    expect(result.proposedNextEpisodeLabel).toBe('S1E2');
+    expect(result.proposedUserStatus).toBe(UserSeriesStatus.WATCHING);
+  });
 });
 
 describe('detectSeasonZeroProposal', () => {

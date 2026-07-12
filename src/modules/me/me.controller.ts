@@ -8,6 +8,7 @@ import { StaleSeriesQueryDto } from './dto/stale-series-query.dto';
 import { RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
+import { HavenStartedYetItemDto } from './dto/haven-started-yet-item.dto';
 
 @ApiTags('me')
 @Controller('me')
@@ -58,5 +59,17 @@ export class MeController {
     @Query() query: StaleSeriesQueryDto,
   ): Promise<StaleSeriesItemDto[]> {
     return this.meService.getStaleSeries(user.id, query.afterDays);
+  }
+
+  @Get('havent-started-yet')
+  @ApiOperation({
+    summary: 'Watchlisted series with real, released content ready to start',
+    description:
+      'A derived Home section, not a persistent status: userStatus WATCHLIST, zero watched episodes, at least one released regular (season > 0) episode, and a confirmed provider mapping. ' +
+      'Specials/Season 0 alone never qualify a series. Sorted newest-released-first, alphabetical on ties.',
+  })
+  @ApiOkResponse({ type: HavenStartedYetItemDto, isArray: true })
+  getHavenStartedYet(@CurrentUser() user: RequestUser): Promise<HavenStartedYetItemDto[]> {
+    return this.meService.getHavenStartedYet(user.id);
   }
 }

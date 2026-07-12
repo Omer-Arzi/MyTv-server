@@ -118,7 +118,7 @@ async function loadCandidates(prisma: PrismaClient, userId: string, onlySeriesId
       tmdbId: p.series.externalIds?.tmdbId ?? null,
       userStatus: p.userStatus,
       nextEpisodeId: p.nextEpisodeId,
-      orderedEpisodes: episodes.map((e) => ({ id: e.id, airDate: e.airDate })),
+      orderedEpisodes: episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.seasonNumber })),
       watchedEpisodeIds: watchedEpisodeIdsBySeriesId.get(p.seriesId) ?? new Set<string>(),
     };
   });

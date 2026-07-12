@@ -192,7 +192,7 @@ async function main() {
   const candidateEpisodeCountBySeriesId = new Map<string, number>();
   for (const e of candidateEpisodeRows) {
     const list = candidateEpisodesBySeriesId.get(e.season.seriesId) ?? [];
-    list.push({ id: e.id, airDate: e.airDate });
+    list.push({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber });
     candidateEpisodesBySeriesId.set(e.season.seriesId, list);
     candidateEpisodeCountBySeriesId.set(e.season.seriesId, (candidateEpisodeCountBySeriesId.get(e.season.seriesId) ?? 0) + 1);
   }

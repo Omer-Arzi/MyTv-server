@@ -167,11 +167,11 @@ export class EpisodeWatchService {
       // already accounted for by the note/force gate above.
       await tx.episodeWatch.delete({ where: { id: watchId } });
 
-      const [orderedEpisodes, remainingWatches, mostRecentRemainingWatch] = await Promise.all([
+      const [episodes, remainingWatches, mostRecentRemainingWatch] = await Promise.all([
         tx.episode.findMany({
           where: { season: { seriesId } },
           orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-          select: { id: true, airDate: true },
+          select: { id: true, airDate: true, season: { select: { seasonNumber: true } } },
         }),
         tx.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
         tx.episodeWatch.findFirst({
@@ -180,13 +180,14 @@ export class EpisodeWatchService {
           select: { watchedAt: true },
         }),
       ]);
+      const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
 
       const watchedEpisodeIdsAfterRemoval = new Set(remainingWatches.map((w) => w.episodeId));
 
       const recompute = recomputeProgressAfterUnwatch({
         releaseStatus: series.releaseStatus,
         currentUserStatus: previousUserStatus,
-        orderedEpisodes: orderedEpisodes as OrderedEpisodeForNextLookup[],
+        orderedEpisodes,
         watchedEpisodeIdsAfterRemoval,
       });
 
@@ -235,12 +236,12 @@ export class EpisodeWatchService {
       this.prisma.episode.findMany({
         where: { season: { seriesId } },
         orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-        select: { id: true, airDate: true },
+        select: { id: true, airDate: true, season: { select: { seasonNumber: true } } },
       }),
       this.prisma.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
     ]);
 
-    const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes;
+    const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
     const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
     const nextEpisodeId = findFirstUnwatchedEpisodeId(orderedEpisodes, watchedEpisodeIds);
     if (!nextEpisodeId) return null;
@@ -310,15 +311,16 @@ export class EpisodeWatchService {
       throw new BadRequestException(allowed.reason);
     }
 
-    const [targetEpisodes, allSeriesEpisodes, existingWatches] = await Promise.all([
+    const [targetEpisodes, allSeriesEpisodesRaw, existingWatches] = await Promise.all([
       this.prisma.episode.findMany({ where: { id: { in: targetEpisodeIds } }, select: { id: true, airDate: true } }),
       this.prisma.episode.findMany({
         where: { season: { seriesId } },
         orderBy: [{ season: { seasonNumber: 'asc' } }, { episodeNumber: 'asc' }],
-        select: { id: true, airDate: true },
+        select: { id: true, airDate: true, season: { select: { seasonNumber: true } } },
       }),
       this.prisma.episodeWatch.findMany({ where: { userId, episode: { season: { seriesId } } }, select: { episodeId: true } }),
     ]);
+    const allSeriesEpisodes: OrderedEpisodeForNextLookup[] = allSeriesEpisodesRaw.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
 
     const existingWatchedIds = new Set(existingWatches.map((w) => w.episodeId));
 
