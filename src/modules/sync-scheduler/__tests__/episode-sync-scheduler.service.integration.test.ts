@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import { PrismaClient, ReleaseStatus, User, UserSeriesStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { EpisodeSyncSchedulerService } from '../episode-sync-scheduler.service';
+import { SeriesRefreshOrchestratorService } from '../../sync/series-refresh-orchestrator.service';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAST = new Date(Date.now() - 30 * DAY_MS);
@@ -21,7 +22,10 @@ const describeIfDbConfigured = process.env.DATABASE_URL ? describe : describe.sk
 
 describeIfDbConfigured('EpisodeSyncSchedulerService (integration, real Postgres + mocked TMDb fetch)', () => {
   const prisma = new PrismaService();
-  const service = new EpisodeSyncSchedulerService(prisma);
+  // The scheduler now delegates every per-series attempt to the shared
+  // orchestrator (locking, local-release-activation, SeriesSyncStatus
+  // bookkeeping) — see episode-sync-scheduler.service.ts's file header.
+  const service = new EpisodeSyncSchedulerService(prisma, new SeriesRefreshOrchestratorService(prisma));
   const createdUserIds: string[] = [];
   const createdSeriesIds: string[] = [];
   let fetchSpy: jest.SpyInstance;

@@ -22,7 +22,7 @@ npm install
 cp .env.example .env      # adjust DATABASE_URL if needed
 docker compose up -d      # starts local Postgres on localhost:5433
 npx prisma migrate dev    # creates the schema (also ensures the dev user exists)
-npm run start:dev         # http://localhost:3000, Swagger at /docs
+npm run start:dev         # http://localhost:3001, Swagger at /docs
 ```
 
 > The Compose file maps Postgres to host port **5433** (not 5432) to avoid clashing with other local Postgres containers. `.env.example` already points at 5433 — change both together if you adjust it.
@@ -32,7 +32,7 @@ npm run start:dev         # http://localhost:3000, Swagger at /docs
 | Variable       | Description                                  | Example                                                        |
 | -------------- | --------------------------------------------- | --------------------------------------------------------------- |
 | `DATABASE_URL` | Postgres connection string used by Prisma     | `postgresql://mytv:mytv@localhost:5433/mytv?schema=public`      |
-| `PORT`         | HTTP port the server listens on               | `3000`                                                           |
+| `PORT`         | HTTP port the server listens on               | `3001`                                                           |
 
 ## Running things
 
@@ -72,7 +72,7 @@ Opens a local DB browser/editor at `http://localhost:5555`.
 
 ### Swagger / API docs
 
-With the server running, open `http://localhost:3000/docs`. The spec is generated from the controllers/DTOs — see `API_CONTRACT.md` for a narrative version aimed at the future React Native client.
+With the server running, open `http://localhost:3001/docs`. The spec is generated from the controllers/DTOs — see `API_CONTRACT.md` for a narrative version aimed at the future React Native client.
 
 ## Local PostgreSQL (Docker Compose)
 

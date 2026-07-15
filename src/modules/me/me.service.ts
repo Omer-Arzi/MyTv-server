@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { UserSeriesStatus } from '@prisma/client';
+import { UserSeriesStatus, WatchSource } from '@prisma/client';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decodeCursor, encodeCursor } from '../../common/utils/cursor.util';
@@ -31,8 +31,17 @@ export class MeService {
       }
     }
 
+    // Excludes only BATCH-sourced watches (the "mark all released" escape
+    // hatch — watch-all-logic.ts) — a domain-model distinction
+    // (EpisodeWatch.watchSource), not a timestamp/heuristic filter. Every
+    // other reader of watch history (progress/completion/next-episode
+    // derivation, series-detail episode lists, watch-all's own dry-run
+    // preview) queries EpisodeWatch directly with no such filter and is
+    // completely unaffected — this exclusion is scoped to Recently Watched
+    // alone. `not: BATCH` (not `equals: SINGLE`) so a future third source
+    // value defaults to visible unless it's explicitly taught to hide too.
     const watches = await this.prisma.episodeWatch.findMany({
-      where: { userId },
+      where: { userId, watchSource: { not: WatchSource.BATCH } },
       orderBy: [{ watchedAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),

@@ -31,7 +31,7 @@ import { buildConfirmedSeriesApplyPlan, ExternalIdsUpdate, isSafeApplyClassifica
 import { buildMigrationApplyPlan, classifyMigrationConfirmation, isProtectedMigrationStatus, StatusSource } from './migration-confirmation-logic';
 import { EpisodeUpdatePlan, LocalEpisodeForApply, ProviderEpisodeForApply } from './apply-friends-tvmaze-logic';
 import { titleSimilarity, extractTitleYearHint } from '../trakt-enrichment/scoring';
-import { classifyIdentityConfidence, evaluateAutoMigrationEligibility, resolveObjectiveMigrationStatus, shouldForceWatchingForPendingNextEpisode } from './migration-policy-logic';
+import { classifyIdentityConfidence, correctNeverStartedBaseStatus, evaluateAutoMigrationEligibility, resolveObjectiveMigrationStatus, shouldForceWatchingForPendingNextEpisode } from './migration-policy-logic';
 import { buildMigrationCatalogInsertPlan, CATALOG_RECONCILIATION_IMPORT_BATCH_ID, computeMatchedEpisodeCounts } from './migration-catalog-plan-logic';
 import { classifyMigrationOperatingOutcome } from './migration-operating-outcome';
 import { captureSeriesSnapshot } from './verification-snapshot';
@@ -228,6 +228,12 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
   for (const ep of local.episodes) bySeason.set(ep.seasonNumber, (bySeason.get(ep.seasonNumber) ?? 0) + 1);
   const localSeasonNumbers = [...bySeason.keys()];
 
+  // Declared outside the try block (not just inside it, where it's
+  // otherwise assigned) so the catch block's P2002 conflict lookup below
+  // can still read whatever value it held at the point of failure —
+  // undefined if the error happened before it was ever assigned.
+  let unifiedExternalIdsUpdateForErrorReporting: ExternalIdsUpdate | undefined;
+
   try {
     const fetched = decision.provider === 'tmdb' ? await fetchTmdbCandidate(tmdb, providerId, localSeasonNumbers) : await fetchTvmazeCandidate(tvmaze, providerId);
 
@@ -288,6 +294,11 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
     });
 
     const migrationIntent = decision.migrationIntent === true;
+    // Moved up from its original computation site (just before the
+    // shouldForceWatchingForPendingNextEpisode call below) so
+    // correctNeverStartedBaseStatus can also use it, in the base-path
+    // branch further down.
+    const explicitStatusOverrideGiven = migrationIntent && decision.statusOverride !== undefined;
     const migrationResult = migrationIntent
       ? classifyMigrationConfirmation({
           baseClassification: decisionResult.classification,
@@ -398,6 +409,7 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
         currentNextEpisodeId: local.progress?.nextEpisodeId ?? null,
       });
       unifiedExternalIdsUpdate = migrationPlan.externalIdsUpdate;
+      unifiedExternalIdsUpdateForErrorReporting = unifiedExternalIdsUpdate;
       unifiedPosterUpdate = migrationPlan.posterUpdate;
       unifiedEpisodeUpdates = migrationPlan.episodeUpdates;
       unifiedEpisodeUpdateCount = migrationPlan.episodeUpdateCount;
@@ -426,6 +438,7 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
         proposedNextEpisodeId: comparison.proposedNextEpisodeId,
       });
       unifiedExternalIdsUpdate = plan.externalIdsUpdate;
+      unifiedExternalIdsUpdateForErrorReporting = unifiedExternalIdsUpdate;
       unifiedPosterUpdate = plan.posterUpdate;
       unifiedEpisodeUpdates = plan.episodeUpdates;
       unifiedEpisodeUpdateCount = plan.episodeUpdateCount;
@@ -433,10 +446,27 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
       unifiedResolvedUserStatus = comparison.proposedUserStatus;
       unifiedResolvedNextEpisodeId = comparison.proposedNextEpisodeId;
       unifiedStatusSource = 'derived';
+
+      // comparison.proposedUserStatus is deriveUserStatusFromNextEpisode's
+      // naive "a next episode exists -> WATCHING" rule — correct for a
+      // series the user has already engaged with, wrong for one being
+      // confirmed for the very first time with zero watch history (true of
+      // virtually every never-started series by definition). See
+      // correctNeverStartedBaseStatus's doc comment for the confirmed live
+      // bug (Rivals, Spider-Noir) this closes.
+      const neverStartedCorrection = correctNeverStartedBaseStatus({
+        resolvedUserStatus: unifiedResolvedUserStatus,
+        liveUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
+        explicitStatusOverrideGiven,
+        hasAnyWatchedEpisode: hasAnyWatchedLocalEpisode,
+      });
+      if (neverStartedCorrection) {
+        unifiedResolvedUserStatus = neverStartedCorrection.userStatus;
+        unifiedResolvedNextEpisodeId = neverStartedCorrection.nextEpisodeId;
+      }
     }
 
     const hasProposedNextEpisode = comparison.proposedNextEpisodeLabel !== null;
-    const explicitStatusOverrideGiven = migrationIntent && decision.statusOverride !== undefined;
     let pendingNewNextEpisodeCreation = false;
     if (
       shouldForceWatchingForPendingNextEpisode({
@@ -749,6 +779,30 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
       },
     };
   } catch (err) {
+    // A confirmed identity colliding with an ExternalIds row ALREADY held by
+    // a DIFFERENT local series (ExternalIds.tmdbId/traktId/imdbId are each
+    // globally unique) almost always means the library has two Series rows
+    // for the same real-world show under different titles (e.g. an English
+    // title and a romanized-original title, both imported separately) — a
+    // real, confirmed incident: "The Future Diary" vs. "Mirai Nikki",
+    // 2026-07-12. Left as the raw Prisma error, this surfaced as an opaque
+    // "Invalid tx.externalIds.upsert() invocation ... Unique constraint
+    // failed" message with no indication of WHICH series or WHY. Identified
+    // here and turned into an actionable message naming the conflicting
+    // series, instead of Prisma/SQL internals.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && unifiedExternalIdsUpdateForErrorReporting) {
+      const conflict = await findConflictingExternalIdsSeries(prisma, unifiedExternalIdsUpdateForErrorReporting);
+      if (conflict) {
+        return {
+          kind: 'error',
+          entry: {
+            title: decision.title,
+            message: `"${decision.title}" resolves to the same provider identity (${unifiedExternalIdsUpdateForErrorReporting.provider}:${unifiedExternalIdsUpdateForErrorReporting.providerId}) as "${conflict.title}", which is already tracked separately in your library. These are almost certainly duplicate entries for the same show — resolve the duplicate (e.g. remove one) before this identity can be confirmed.`,
+          },
+        };
+      }
+    }
+
     const isNotFound = (err instanceof TmdbRequestError || err instanceof TvMazeRequestError) && err.status === 404;
     const message = err instanceof TmdbRequestError || err instanceof TvMazeRequestError ? err.message : (err as Error).message;
     const nextManualReviewCandidate = isNotFound
@@ -756,4 +810,24 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
       : undefined;
     return { kind: 'error', entry: { title: decision.title, message }, nextManualReviewCandidate };
   }
+}
+
+// Finds the OTHER series (never `unifiedExternalIdsUpdate.seriesId` itself)
+// already holding one of the identity fields the failed upsert just tried
+// to write — checked in the same field order Prisma's own unique
+// constraints are declared in (prisma/schema.prisma's ExternalIds model),
+// so the reported conflict matches whichever field actually collided.
+export async function findConflictingExternalIdsSeries(
+  prisma: PrismaClient,
+  update: ExternalIdsUpdate,
+): Promise<{ seriesId: string; title: string } | null> {
+  const candidateWheres: Prisma.ExternalIdsWhereInput[] = [];
+  if (update.tmdbId) candidateWheres.push({ tmdbId: update.tmdbId });
+  if (update.provider && update.providerId) candidateWheres.push({ provider: update.provider, providerId: update.providerId });
+
+  for (const where of candidateWheres) {
+    const row = await prisma.externalIds.findFirst({ where: { ...where, NOT: { seriesId: update.seriesId } }, include: { series: { select: { title: true } } } });
+    if (row) return { seriesId: row.seriesId, title: row.series.title };
+  }
+  return null;
 }

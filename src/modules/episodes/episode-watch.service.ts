@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { UserSeriesStatus } from '@prisma/client';
+import { Episode, Season, UserSeriesStatus, WatchSource } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { deriveUserStatusFromNextEpisode } from '../../common/derive-user-status';
@@ -7,6 +7,7 @@ import { isEpisodeReleased } from '../../common/is-episode-released';
 import { checkWatchAllAllowed, planWatchAll, recomputeProgressAfterWatchAll } from '../../common/watch-all-logic';
 import { checkUnwatchAllowed, recomputeProgressAfterUnwatch } from '../../common/unwatch-logic';
 import { findFirstUnwatchedEpisodeId, OrderedEpisodeForNextLookup } from '../series/series-query-helpers';
+import { computeRemainingEpisodesAfterNext } from '../me/me-query-helpers';
 import { MarkWatchedResponseDto } from './dto/mark-watched-response.dto';
 import { EpisodeWatchDto } from './dto/episode-watch.dto';
 import { WatchAllRequestDto } from './dto/watch-all-request.dto';
@@ -47,20 +48,45 @@ export class EpisodeWatchService {
 
     const seriesId = episode.season.seriesId;
 
+    // watchSource: SINGLE on BOTH branches, explicitly — this endpoint is
+    // always a deliberate, individual mark-watched action (the V action
+    // and the swipe action both call it — see WatchNextCard's shared
+    // onMarkWatched prop), whether it's creating a fresh watch or
+    // re-touching an episode that already has one (e.g. a previously
+    // BATCH-hidden row, from the mark-all escape hatch, being individually
+    // re-marked here) — that re-touch is itself a real single-episode
+    // action and should become visible in Recently Watched, per the
+    // task's decision that later individually marking a batch-watched
+    // episode restores normal visibility.
     const watch = await this.prisma.episodeWatch.upsert({
       where: { userId_episodeId: { userId, episodeId } },
-      create: { userId, episodeId },
-      update: { watchedAt: new Date() },
+      create: { userId, episodeId, watchSource: WatchSource.SINGLE },
+      update: { watchedAt: new Date(), watchSource: WatchSource.SINGLE },
       include: { note: true },
     });
 
-    const nextEpisode = await this.findNextEpisode(userId, seriesId);
+    const { nextEpisode, orderedEpisodes, watchedEpisodeIds } = await this.findNextEpisode(userId, seriesId);
 
     // A fresh watch is the strongest signal available — always overwrite
     // userStatus (clears any prior WATCHLIST/PAUSED/DROPPED without a
     // separate "resume" step) rather than only filling it in on create.
     // See docs/status-model-plan.md §6.
     const userStatus = deriveUserStatusFromNextEpisode(!!nextEpisode, episode.season.series.releaseStatus);
+
+    // Reuses the exact same computation Watch Next items carry (GET /home,
+    // GET /me/watch-next — me-query-helpers.ts) so a mobile client can
+    // update a Watch Next card's "+N" indicator in place from THIS
+    // response alone — see mark-watched-response.dto.ts's doc comment.
+    // watchedEpisodeIds already includes the watch just upserted above
+    // (freshly re-queried by findNextEpisode, not a stale pre-mutation
+    // snapshot), so this reflects the correct post-watch remaining count.
+    const remainingEpisodesAfterNext = nextEpisode
+      ? computeRemainingEpisodesAfterNext(
+          orderedEpisodes.map((e) => ({ id: e.id, seriesId, airDate: e.airDate })),
+          nextEpisode.id,
+          watchedEpisodeIds,
+        )
+      : null;
 
     await this.prisma.userSeriesProgress.upsert({
       where: { userId_seriesId: { userId, seriesId } },
@@ -89,6 +115,7 @@ export class EpisodeWatchService {
       nextEpisode: nextEpisode ? toEpisodeSummary(nextEpisode) : null,
       seriesCompleted: !nextEpisode,
       userStatus,
+      remainingEpisodesAfterNext,
     };
   }
 
@@ -231,7 +258,14 @@ export class EpisodeWatchService {
   // permanently hid S1E2 from Watch Next, and later watching the skipped
   // S1E2 would compute S1E3 as "next" again even though it was already
   // watched, overwriting nextEpisodeId with an already-watched episode.
-  private async findNextEpisode(userId: string, seriesId: string) {
+  // Also returns orderedEpisodes/watchedEpisodeIds (not just the found
+  // episode) so the caller can compute remainingEpisodesAfterNext
+  // (me-query-helpers.ts's computeRemainingEpisodesAfterNext) from the same
+  // already-fetched, already-post-watch-consistent data — no second query.
+  private async findNextEpisode(
+    userId: string,
+    seriesId: string,
+  ): Promise<{ nextEpisode: (Episode & { season: Season }) | null; orderedEpisodes: OrderedEpisodeForNextLookup[]; watchedEpisodeIds: Set<string> }> {
     const [episodes, watches] = await Promise.all([
       this.prisma.episode.findMany({
         where: { season: { seriesId } },
@@ -244,9 +278,10 @@ export class EpisodeWatchService {
     const orderedEpisodes: OrderedEpisodeForNextLookup[] = episodes.map((e) => ({ id: e.id, airDate: e.airDate, seasonNumber: e.season.seasonNumber }));
     const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
     const nextEpisodeId = findFirstUnwatchedEpisodeId(orderedEpisodes, watchedEpisodeIds);
-    if (!nextEpisodeId) return null;
+    if (!nextEpisodeId) return { nextEpisode: null, orderedEpisodes, watchedEpisodeIds };
 
-    return this.prisma.episode.findUnique({ where: { id: nextEpisodeId }, include: { season: true } });
+    const nextEpisode = await this.prisma.episode.findUnique({ where: { id: nextEpisodeId }, include: { season: true } });
+    return { nextEpisode, orderedEpisodes, watchedEpisodeIds };
   }
 
   // POST /seasons/:seasonId/watch-all — manual escape hatch for provider-
@@ -344,8 +379,16 @@ export class EpisodeWatchService {
     if (!dryRun && plan.toCreate.length > 0) {
       const now = new Date();
       await this.prisma.$transaction(async (tx) => {
+        // BATCH — hidden from Recently Watched (MeService.getRecentlyWatched)
+        // but otherwise a completely ordinary EpisodeWatch row: still
+        // counted by progress/completion/next-episode derivation below,
+        // still a real persisted watch. An episode that ALREADY had a
+        // watch row (plan.alreadyWatched, e.g. previously single-marked)
+        // is never touched here — createMany only ever covers
+        // plan.toCreate — so its existing watchSource (and Recently
+        // Watched visibility) is preserved exactly as it was.
         await tx.episodeWatch.createMany({
-          data: plan.toCreate.map((episodeId) => ({ userId, episodeId, watchedAt: now })),
+          data: plan.toCreate.map((episodeId) => ({ userId, episodeId, watchedAt: now, watchSource: WatchSource.BATCH })),
         });
         await tx.userSeriesProgress.upsert({
           where: { userId_seriesId: { userId, seriesId } },

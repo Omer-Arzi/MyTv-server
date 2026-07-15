@@ -64,6 +64,7 @@ model User {
   seriesRatings   SeriesRating[]
   migrationHistory  MigrationHistory[]
   providerDecisions ProviderIdentityDecision[]
+  libraryRefreshJobs LibraryRefreshJob[]
 }
 
 model Series {
@@ -129,12 +130,106 @@ model SeriesSyncStatus {
 
   // Denormalized so the scheduler's due-series query doesn't have to
   // recompute every series' interval from scratch on every tick — set to
-  // (attempt time + policy interval, or backoff delay after a failure).
+  // (attempt time + smart-policy interval, or backoff delay after a
+  // failure — see smart-scheduling-policy.ts).
   nextEligibleRefreshAt DateTime?
+
+  // --- Added for the episode-and-series-update flow (Part 9) -------------
+  // What triggered the MOST RECENT attempt (successful or not) — one of
+  // SCHEDULED / MANUAL_SERIES / MANUAL_LIBRARY / SERIES_PAGE_STALE /
+  // LOCAL_RELEASE_ACTIVATION. Plain string (not a Prisma enum reference on
+  // this column, though SyncTrigger below IS a real enum) kept nullable so
+  // a pre-existing row from before this migration reads as "unknown", not
+  // a false SCHEDULED.
+  lastRefreshTrigger SyncTrigger?
+
+  // Duplicate-run / concurrency protection (Part 5/16). Claimed atomically
+  // via an UPDATE ... WHERE refreshInProgress = false (see
+  // SeriesRefreshOrchestratorService) — never trusted from a prior read.
+  // refreshStartedAt lets a crashed/never-released lock be detected and
+  // reclaimed after a timeout (restart-safety) rather than wedging a
+  // series out of the schedule forever.
+  refreshInProgress Boolean   @default(false)
+  refreshStartedAt  DateTime?
+
+  // When the last attempt actually found something to insert/change
+  // (episodesAdded/seasonsAdded > 0), independent of lastEpisodeRefreshAt
+  // (which updates on EVERY attempt, changed or not) — answers "when did
+  // this series' catalog last actually change" (Part 9).
+  lastChangeAt      DateTime?
+  lastEpisodesAdded Int?
+  lastSeasonsAdded  Int?
+  // True when the last attempt's classification required manual review
+  // (season shrink, suspicious bulk insert, etc. — see
+  // classifyRefreshOperatingOutcome) rather than being auto-applied.
+  lastRequiresManualReview Boolean @default(false)
+
+  // Separate from lastEpisodeRefreshAt/lastProviderCheckAt (both of which
+  // only ever update on a PROVIDER call) — set whenever
+  // runLocalReleaseActivation (local-release-activation.ts) recomputes
+  // this series' progress, provider call or not.
+  lastLocalActivationAt DateTime?
 
   updatedAt DateTime @updatedAt
 
   @@index([nextEligibleRefreshAt])
+  @@index([refreshInProgress])
+}
+
+// Suggested trigger values (Part 9) — one place both SeriesSyncStatus and
+// LibraryRefreshJob draw from, so a log/UI reader never has to reconcile
+// two separate trigger vocabularies.
+enum SyncTrigger {
+  SCHEDULED
+  MANUAL_SERIES
+  MANUAL_LIBRARY
+  SERIES_PAGE_STALE
+  LOCAL_RELEASE_ACTIVATION
+}
+
+enum LibraryRefreshJobStatus {
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+// User-level full-library refresh job (Part 9 — "do not overload one
+// per-series row with insufficient aggregate job information"). One row
+// per manual "Check for updates" run (Part 6); SeriesRefreshOrchestratorService
+// updates the per-series SeriesSyncStatus rows as it goes, while THIS row
+// tracks the aggregate job itself — what the Settings screen polls for
+// progress/summary. Never more than one RUNNING row per user at a time —
+// enforced at the service layer (LibraryRefreshJobService), not a DB
+// constraint (see that service's doc comment for the accepted race-window
+// tradeoff on a single-instance, single-real-user app).
+model LibraryRefreshJob {
+  id           String                  @id @default(uuid())
+  userId       String
+  status       LibraryRefreshJobStatus @default(RUNNING)
+  triggeredBy  SyncTrigger
+  startedAt    DateTime                @default(now())
+  finishedAt   DateTime?
+
+  totalSeries           Int
+  checkedSeries         Int @default(0)
+  seriesWithNewEpisodes Int @default(0)
+  seriesWithNewSeasons  Int @default(0)
+  seriesFailed          Int @default(0)
+  seriesManualReview    Int @default(0)
+
+  // Local-release-activation counts for this job's final whole-library
+  // pass (Part 6.5) — kept alongside the per-series provider-refresh
+  // counts above rather than conflated with them, since they come from a
+  // genuinely separate process (see local-release-activation.ts).
+  seriesActivatedLocally Int @default(0)
+
+  lastError String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+  @@index([userId, status])
 }
 
 model Season {
@@ -214,19 +309,37 @@ model UserSeriesProgress {
 // *event* tracking is still out of scope for V1, marking watched again just
 // updates it. rewatchCount preserves the "how many times" signal TV Time
 // carries without modeling full rewatch history (docs/mytv-prisma-schema-plan.md §4).
+// SINGLE — a deliberate, individual "mark this one episode watched" action
+// (POST /episodes/:episodeId/watch — the V/check action and the swipe
+// action both funnel into this same endpoint), always visible in Recently
+// Watched. BATCH — created by the "mark all released" bulk escape hatch
+// (POST /seasons/:seasonId/watch-all, POST /series/:seriesId/watch-all-released
+// — watch-all-logic.ts), hidden from Recently Watched (see
+// MeService.getRecentlyWatched) but otherwise a completely normal
+// EpisodeWatch row: counted in progress/completion, next-episode
+// derivation, and every other place that reads watch history. Defaulted to
+// SINGLE so existing rows (including TV Time import history, which writes
+// EpisodeWatch directly and is unaffected by this field) keep their
+// current Recently Watched visibility unchanged.
+enum WatchSource {
+  SINGLE
+  BATCH
+}
+
 model EpisodeWatch {
-  id                   String   @id @default(uuid())
+  id                   String      @id @default(uuid())
   userId               String
   episodeId            String
-  watchedAt            DateTime @default(now())
+  watchedAt            DateTime    @default(now())
   // True when watchedAt is a rough guess rather than a real date — e.g. TV
   // Time's bulk "mark previous episodes watched" action stamps many episodes
   // with one timestamp (docs/tvtime-data-audit.md §3.1). Lets the UI show
   // "date approximate" instead of presenting a guess as fact.
-  watchDateApproximate Boolean  @default(false)
-  rewatchCount         Int      @default(0)
+  watchDateApproximate Boolean     @default(false)
+  rewatchCount         Int         @default(0)
   rawMetadata          Json?
   importBatchId        String?
+  watchSource          WatchSource @default(SINGLE)
 
   user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   episode Episode      @relation(fields: [episodeId], references: [id], onDelete: Cascade)

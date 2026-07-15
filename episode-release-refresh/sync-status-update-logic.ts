@@ -5,7 +5,7 @@
 // separation-of-concerns convention as every other *-logic.ts file in this
 // project.
 
-import { UserSeriesStatus } from '@prisma/client';
+import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
 import { computeNextEligibleRefreshAt } from './sync-frequency-policy';
 
 // A genuine provider/write failure is the only outcome that should back
@@ -25,6 +25,11 @@ export interface ComputeSyncStatusUpdateInput {
   previousLastSuccessfulRefreshAt: Date | null;
   durationMs: number;
   now: Date;
+  // Live-read AFTER this attempt (so a newly-inserted episode's date is
+  // already reflected) — feeds smart-scheduling-policy.ts's urgency-aware
+  // success-path interval. See computeNextEligibleRefreshAt's doc comment.
+  releaseStatus: ReleaseStatus;
+  nextKnownUpcomingAirDate: Date | null;
 }
 
 export interface SyncStatusUpdate {
@@ -39,7 +44,7 @@ export interface SyncStatusUpdate {
 }
 
 export function computeSyncStatusUpdate(input: ComputeSyncStatusUpdateInput): SyncStatusUpdate {
-  const { status, outcome, previousNumberOfFailures, previousLastSuccessfulRefreshAt, durationMs, now } = input;
+  const { status, outcome, previousNumberOfFailures, previousLastSuccessfulRefreshAt, durationMs, now, releaseStatus, nextKnownUpcomingAirDate } = input;
 
   if (outcome.kind === 'failure') {
     const numberOfFailures = previousNumberOfFailures + 1;
@@ -54,7 +59,7 @@ export function computeSyncStatusUpdate(input: ComputeSyncStatusUpdateInput): Sy
       lastProviderCheckAt: now,
       numberOfFailures,
       lastSyncDurationMs: durationMs,
-      nextEligibleRefreshAt: computeNextEligibleRefreshAt({ status, outcome: 'failure', numberOfFailuresAfterThisAttempt: numberOfFailures, now }),
+      nextEligibleRefreshAt: computeNextEligibleRefreshAt({ status, outcome: 'failure', numberOfFailuresAfterThisAttempt: numberOfFailures, releaseStatus, nextKnownUpcomingAirDate, now }),
     };
   }
 
@@ -66,6 +71,6 @@ export function computeSyncStatusUpdate(input: ComputeSyncStatusUpdateInput): Sy
     lastProviderCheckAt: now,
     numberOfFailures: 0,
     lastSyncDurationMs: durationMs,
-    nextEligibleRefreshAt: computeNextEligibleRefreshAt({ status, outcome: 'success', numberOfFailuresAfterThisAttempt: 0, now }),
+    nextEligibleRefreshAt: computeNextEligibleRefreshAt({ status, outcome: 'success', numberOfFailuresAfterThisAttempt: 0, releaseStatus, nextKnownUpcomingAirDate, now }),
   };
 }

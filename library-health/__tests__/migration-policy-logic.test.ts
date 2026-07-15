@@ -1,5 +1,5 @@
 import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
-import { classifyIdentityConfidence, evaluateAutoMigrationEligibility, resolveObjectiveMigrationStatus, shouldForceWatchingForPendingNextEpisode } from '../migration-policy-logic';
+import { classifyIdentityConfidence, correctNeverStartedBaseStatus, evaluateAutoMigrationEligibility, resolveObjectiveMigrationStatus, shouldForceWatchingForPendingNextEpisode } from '../migration-policy-logic';
 
 describe('classifyIdentityConfidence', () => {
   it('is FAILED whenever title/year sanity did not pass, regardless of similarity', () => {
@@ -207,5 +207,66 @@ describe('shouldForceWatchingForPendingNextEpisode', () => {
       hasAnyWatchedEpisode: false,
     });
     expect(result).toBe(false);
+  });
+});
+
+// Real live-data bug (2026-07-12): confirming migration for Rivals (2024)
+// and Spider-Noir — both UNKNOWN status, zero watch history, clean/safe
+// matches — went straight to WATCHING via the base pipeline's
+// compareSeriesCatalog-derived proposedUserStatus (a next episode existing
+// alone implies WATCHING there, with no watch-history awareness at all).
+// shouldForceWatchingForPendingNextEpisode above never had a chance to
+// catch this — it only ever ADDS a forced WATCHING on top of an
+// already-resolved value, it doesn't correct one that's already wrong.
+describe('correctNeverStartedBaseStatus', () => {
+  it('corrects a never-started series (zero watch history) resolved to WATCHING down to WATCHLIST, clearing nextEpisodeId — the Rivals/Spider-Noir case', () => {
+    const result = correctNeverStartedBaseStatus({
+      resolvedUserStatus: UserSeriesStatus.WATCHING,
+      liveUserStatus: UserSeriesStatus.UNKNOWN,
+      explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: false,
+    });
+    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHLIST, nextEpisodeId: null });
+  });
+
+  it('does nothing when resolvedUserStatus is not WATCHING — CAUGHT_UP/COMPLETED derivations are untouched', () => {
+    expect(correctNeverStartedBaseStatus({ resolvedUserStatus: UserSeriesStatus.CAUGHT_UP, liveUserStatus: UserSeriesStatus.UNKNOWN, explicitStatusOverrideGiven: false, hasAnyWatchedEpisode: false })).toBeNull();
+    expect(correctNeverStartedBaseStatus({ resolvedUserStatus: UserSeriesStatus.COMPLETED, liveUserStatus: UserSeriesStatus.UNKNOWN, explicitStatusOverrideGiven: false, hasAnyWatchedEpisode: false })).toBeNull();
+  });
+
+  it('does nothing when the series has real watch history — an already-engaged series legitimately deriving WATCHING is untouched', () => {
+    const result = correctNeverStartedBaseStatus({
+      resolvedUserStatus: UserSeriesStatus.WATCHING,
+      liveUserStatus: UserSeriesStatus.CAUGHT_UP,
+      explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: true,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('never overrides a protected DROPPED/PAUSED status, even with zero watch history', () => {
+    for (const status of [UserSeriesStatus.DROPPED, UserSeriesStatus.PAUSED]) {
+      expect(correctNeverStartedBaseStatus({ resolvedUserStatus: UserSeriesStatus.WATCHING, liveUserStatus: status, explicitStatusOverrideGiven: false, hasAnyWatchedEpisode: false })).toBeNull();
+    }
+  });
+
+  it('never overrides an explicit human statusOverride, even with zero watch history', () => {
+    const result = correctNeverStartedBaseStatus({
+      resolvedUserStatus: UserSeriesStatus.WATCHING,
+      liveUserStatus: UserSeriesStatus.UNKNOWN,
+      explicitStatusOverrideGiven: true,
+      hasAnyWatchedEpisode: false,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('corrects a WATCHLIST-status series the same way as UNKNOWN', () => {
+    const result = correctNeverStartedBaseStatus({
+      resolvedUserStatus: UserSeriesStatus.WATCHING,
+      liveUserStatus: UserSeriesStatus.WATCHLIST,
+      explicitStatusOverrideGiven: false,
+      hasAnyWatchedEpisode: false,
+    });
+    expect(result).toEqual({ userStatus: UserSeriesStatus.WATCHLIST, nextEpisodeId: null });
   });
 });

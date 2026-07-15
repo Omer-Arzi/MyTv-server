@@ -5,7 +5,8 @@
 // now the right time." See docs for the scheduler-architecture task: Part 2
 // (refresh frequency by user status) and Part 7 (failure/retry handling).
 
-import { UserSeriesStatus } from '@prisma/client';
+import { ReleaseStatus, UserSeriesStatus } from '@prisma/client';
+import { computeSmartRefreshIntervalMs } from './smart-scheduling-policy';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -77,22 +78,29 @@ export interface ComputeNextEligibleRefreshAtInput {
   // Total consecutive failures INCLUDING this attempt (i.e. already
   // incremented by the caller before calling this on a failure outcome).
   numberOfFailuresAfterThisAttempt: number;
+  // Required for the success path — feeds smart-scheduling-policy.ts's
+  // urgency-aware interval. Ignored on the failure path (backoff is
+  // independent of urgency by design — see computeFailureBackoffMs above).
+  releaseStatus: ReleaseStatus;
+  nextKnownUpcomingAirDate: Date | null;
   now?: Date;
 }
 
 // Single place that decides the next SeriesSyncStatus.nextEligibleRefreshAt
-// value, for both a successful attempt (normal per-status interval, reset
-// as if failures never happened) and a failed one (exponential backoff,
-// independent of the status interval — a failing WATCHING series is
-// retried sooner than its normal 8h cadence would suggest, not later).
-// Returns null only when the status isn't on a schedule at all (defensive
-// — a caller should never invoke this for an UNKNOWN-status series, since
-// checkSeriesEligibility/isRefreshDue already exclude it earlier).
+// value, for both a successful attempt (smart, urgency-aware interval —
+// see smart-scheduling-policy.ts — reset as if failures never happened)
+// and a failed one (exponential backoff, independent of the status/urgency
+// interval — a failing WATCHING series is retried sooner than its normal
+// cadence would suggest, not later). Returns null only when the status
+// isn't on a schedule at all (defensive — a caller should never invoke
+// this for an UNKNOWN-status series, since checkSeriesEligibility/
+// isRefreshDue already exclude it earlier).
 export function computeNextEligibleRefreshAt(input: ComputeNextEligibleRefreshAtInput): Date | null {
   const now = input.now ?? new Date();
   if (input.outcome === 'success') {
-    const interval = getRefreshIntervalMs(input.status);
-    return interval === null ? null : new Date(now.getTime() + interval);
+    if (getRefreshIntervalMs(input.status) === null) return null; // UNKNOWN (or an untaught future status) — never scheduled.
+    const smart = computeSmartRefreshIntervalMs({ userStatus: input.status, releaseStatus: input.releaseStatus, nextKnownUpcomingAirDate: input.nextKnownUpcomingAirDate, now });
+    return new Date(now.getTime() + smart.intervalMs);
   }
   return new Date(now.getTime() + computeFailureBackoffMs(input.numberOfFailuresAfterThisAttempt));
 }

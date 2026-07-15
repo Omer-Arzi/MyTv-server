@@ -224,3 +224,56 @@ export function shouldForceWatchingForPendingNextEpisode(input: ShouldForceWatch
   if (!input.hasAnyWatchedEpisode) return false;
   return true;
 }
+
+// --- Base (non-migration-intent) pipeline: never-started WATCHING correction --
+//
+// The base apply path (run-provider-confirmation-for-decision.ts's non-
+// migration/non-auto-migrate branch — the common "clean, safe match" case)
+// resolves userStatus/nextEpisodeId straight from compareSeriesCatalog's
+// proposedUserStatus, which is deriveUserStatusFromNextEpisode(hasNextEpisode,
+// releaseStatus) — a next unwatched episode existing is ALONE sufficient to
+// derive WATCHING there, with no notion of watch history at all. That's the
+// right rule for a series the user has already engaged with (a normal
+// catalog refresh finding a new episode), but wrong for a series being
+// confirmed for the very first time with zero watch history: having a next
+// episode is true of virtually every such series by definition, so this
+// silently promotes every never-started series straight to "Watch Next" the
+// moment its identity is confirmed — exactly the same class of mistake
+// shouldForceWatchingForPendingNextEpisode above guards against for its own
+// (narrower, post-catalog-creation) case, and proposeUserStatusAfterEnrichment
+// (derive-user-status.ts) guards against for the sibling Trakt/TMDb
+// enrichment flow. This is that same rule, applied to the base pipeline's
+// own naive derivation. Confirmed live-data bug: Rivals (2024) and
+// Spider-Noir both went UNKNOWN -> WATCHING with 0 watched episodes via this
+// exact path on 2026-07-12.
+//
+// Deliberately narrow, mirroring shouldForceWatchingForPendingNextEpisode's
+// own posture: only ever corrects WATCHING specifically (CAUGHT_UP/COMPLETED
+// derivations are a provider-lifecycle fact, not a "just started" guess, and
+// stay untouched), never fires for a protected DROPPED/PAUSED status or an
+// explicit human statusOverride, and targets WATCHLIST (not a bare "leave it
+// alone") with nextEpisodeId cleared — matching the exact target this
+// session's earlier real-data fix used, so a newly-confirmed, never-started
+// series is visible in Home's "Haven't Started Yet" section rather than
+// silently reverting to an invisible UNKNOWN.
+export interface CorrectNeverStartedBaseStatusInput {
+  resolvedUserStatus: UserSeriesStatus;
+  liveUserStatus: UserSeriesStatus;
+  explicitStatusOverrideGiven: boolean;
+  hasAnyWatchedEpisode: boolean;
+}
+
+export interface CorrectNeverStartedBaseStatusResult {
+  userStatus: UserSeriesStatus;
+  nextEpisodeId: null;
+}
+
+// Returns null when no correction applies — the caller should leave its
+// already-resolved userStatus/nextEpisodeId exactly as they were.
+export function correctNeverStartedBaseStatus(input: CorrectNeverStartedBaseStatusInput): CorrectNeverStartedBaseStatusResult | null {
+  if (input.resolvedUserStatus !== UserSeriesStatus.WATCHING) return null;
+  if (isProtectedMigrationStatus(input.liveUserStatus)) return null;
+  if (input.explicitStatusOverrideGiven) return null;
+  if (input.hasAnyWatchedEpisode) return null;
+  return { userStatus: UserSeriesStatus.WATCHLIST, nextEpisodeId: null };
+}

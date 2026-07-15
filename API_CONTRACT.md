@@ -2,7 +2,7 @@
 
 This is a narrative summary of the backend API for whoever builds the mobile app. The full, always-up-to-date spec is served from the running backend at **`/docs`** (Swagger UI) and **`/docs-json`** (raw OpenAPI JSON) — treat this file as an orientation guide, not the source of truth.
 
-Base URL (local dev): `http://localhost:3000`
+Base URL (local dev): `http://localhost:3001`
 
 ## Auth (current state)
 

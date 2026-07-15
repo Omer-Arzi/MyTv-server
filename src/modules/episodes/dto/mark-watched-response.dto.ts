@@ -37,4 +37,15 @@ export class MarkWatchedResponseDto {
       'otherwise CAUGHT_UP (show still ongoing) or COMPLETED (show has ended/been cancelled).',
   })
   userStatus: UserSeriesStatus;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 3,
+    description:
+      'How many known catalog episodes come after nextEpisode (nextEpisode itself not counted) — the same field ' +
+      'Watch Next items carry (GET /home, GET /me/watch-next). Null when nextEpisode is null, or when the server ' +
+      "couldn't reliably determine catalog position. Included so a Watch Next card can update its \"+N\" indicator " +
+      'in place from this response alone, with no follow-up request.',
+  })
+  remainingEpisodesAfterNext: number | null;
 }
