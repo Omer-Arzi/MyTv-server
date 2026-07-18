@@ -28,7 +28,11 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
 
-  const port = process.env.PORT ? Number(process.env.PORT) : 3000;
+  // 3001, not 3000 — the sibling nemesh/client (Next.js) project defaults to
+  // 3000, so this fallback must never collide with it even when PORT isn't
+  // set (e.g. a fresh checkout run before .env is copied). See README.md's
+  // "Environment variables" table and .env.example — keep both in sync.
+  const port = process.env.PORT ? Number(process.env.PORT) : 3001;
   await app.listen(port, '0.0.0.0');
   // eslint-disable-next-line no-console
   console.log(`Server listening on port ${port} — Swagger docs at /docs`);

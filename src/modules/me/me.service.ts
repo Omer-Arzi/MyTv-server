@@ -7,6 +7,7 @@ import { RecentlyWatchedItemDto, RecentlyWatchedPageDto } from './dto/recently-w
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
 import { HavenStartedYetItemDto } from './dto/haven-started-yet-item.dto';
+import { UpcomingPageDto } from './dto/upcoming-page.dto';
 import {
   computeRemainingEpisodesAfterNext,
   deriveHavenStartedYetCandidates,
@@ -15,6 +16,13 @@ import {
   groupOrderedEpisodesBySeriesId,
   sortHavenStartedYetResults,
 } from './me-query-helpers';
+import {
+  buildUpcomingDayBuckets,
+  toAirDateOnlyString,
+  toUpcomingItem,
+  UPCOMING_ELIGIBLE_STATUSES,
+  validateUpcomingWindow,
+} from './upcoming-query-helpers';
 import { DEFAULT_STALE_AFTER_DAYS } from '../../common/stale-series-trust';
 
 @Injectable()
@@ -260,5 +268,86 @@ export class MeService {
       },
       releasedRegularEpisodeCount: r.releasedRegularEpisodeCount,
     }));
+  }
+
+  // GET /me/upcoming — the personal release timeline (docs/upcoming-timeline-todo.md
+  // is the full design writeup). Date-window pagination (from/to, both
+  // required plain "YYYY-MM-DD" strings) rather than opaque-cursor: the
+  // window itself IS the pagination state, entirely client-owned, since
+  // this app has no per-user timezone and only the client knows its own
+  // local "today". A live query over Episode/UserSeriesProgress/
+  // EpisodeWatch every time — no materialized/cached timeline table, so
+  // there is nothing to invalidate when the sync scheduler, a manual
+  // refresh, or a watch mutation changes underlying data; the next call
+  // just re-reads current state.
+  async getUpcoming(userId: string, from: string, to: string): Promise<UpcomingPageDto> {
+    const window = validateUpcomingWindow(from, to);
+    if (!window.valid) {
+      throw new BadRequestException(window.reason);
+    }
+
+    const eligibleSeriesFilter = {
+      season: { series: { progress: { some: { userId, userStatus: { in: UPCOMING_ELIGIBLE_STATUSES } } } } },
+    };
+
+    const [episodes, pastProbe, futureProbe] = await Promise.all([
+      this.prisma.episode.findMany({
+        where: { airDate: { gte: window.from, lt: window.to }, ...eligibleSeriesFilter },
+        include: { season: { include: { series: { include: { progress: { where: { userId } } } } } } },
+        orderBy: { airDate: 'asc' },
+      }),
+      this.prisma.episode.findFirst({
+        where: { airDate: { lt: window.from }, ...eligibleSeriesFilter },
+        select: { id: true },
+      }),
+      this.prisma.episode.findFirst({
+        where: { airDate: { gte: window.to }, ...eligibleSeriesFilter },
+        select: { id: true },
+      }),
+    ]);
+
+    const watches =
+      episodes.length === 0
+        ? []
+        : await this.prisma.episodeWatch.findMany({
+            where: { userId, episodeId: { in: episodes.map((e) => e.id) } },
+            select: { id: true, episodeId: true },
+          });
+    const watchIdByEpisodeId = new Map(watches.map((w) => [w.episodeId, w.id]));
+
+    const now = new Date();
+    const items = episodes.map((episode) => {
+      // progress is filtered to this user above, so there is at most one row;
+      // an episode only reaches this query at all because that row's
+      // userStatus is already in UPCOMING_ELIGIBLE_STATUSES (the WHERE
+      // clause guarantees it), so the fallback below is defensive only.
+      const userStatus = episode.season.series.progress[0]?.userStatus ?? UserSeriesStatus.UNKNOWN;
+      return toUpcomingItem(
+        {
+          id: episode.id,
+          seasonId: episode.seasonId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          airDate: episode.airDate!,
+          seasonNumber: episode.season.seasonNumber,
+          seriesId: episode.season.series.id,
+          seriesTitle: episode.season.series.title,
+          posterUrl: episode.season.series.posterUrl,
+          seriesReleaseStatus: episode.season.series.releaseStatus,
+          seriesUserStatus: userStatus,
+        },
+        watchIdByEpisodeId.get(episode.id) ?? null,
+        now,
+      );
+    });
+
+    return {
+      from,
+      to,
+      today: toAirDateOnlyString(now),
+      days: buildUpcomingDayBuckets(items),
+      hasMorePast: pastProbe !== null,
+      hasMoreFuture: futureProbe !== null,
+    };
   }
 }

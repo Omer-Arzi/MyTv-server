@@ -9,6 +9,8 @@ import { RecentlyWatchedPageDto } from './dto/recently-watched-item.dto';
 import { WatchNextItemDto } from './dto/watch-next-item.dto';
 import { StaleSeriesItemDto } from './dto/stale-series-item.dto';
 import { HavenStartedYetItemDto } from './dto/haven-started-yet-item.dto';
+import { UpcomingQueryDto } from './dto/upcoming-query.dto';
+import { UpcomingPageDto } from './dto/upcoming-page.dto';
 
 @ApiTags('me')
 @Controller('me')
@@ -71,5 +73,19 @@ export class MeController {
   @ApiOkResponse({ type: HavenStartedYetItemDto, isArray: true })
   getHavenStartedYet(@CurrentUser() user: RequestUser): Promise<HavenStartedYetItemDto[]> {
     return this.meService.getHavenStartedYet(user.id);
+  }
+
+  @Get('upcoming')
+  @ApiOperation({
+    summary: 'Personal release timeline — what released, releases today, and releases next',
+    description:
+      'Date-window pagination via required "from"/"to" (plain YYYY-MM-DD, "to" exclusive, span 1-45 days) — not opaque-cursor, since the ' +
+      'window itself is the pagination state and only the client knows its own local "today" (this app has no per-user timezone). ' +
+      'Includes WATCHING/CAUGHT_UP/WATCHLIST/PAUSED/COMPLETED series (excludes DROPPED/UNKNOWN); a live query, never a materialized cache. ' +
+      'days is sparse (only dates with >=1 item) — the client synthesizes an empty "Today" section itself when needed.',
+  })
+  @ApiOkResponse({ type: UpcomingPageDto })
+  getUpcoming(@CurrentUser() user: RequestUser, @Query() query: UpcomingQueryDto): Promise<UpcomingPageDto> {
+    return this.meService.getUpcoming(user.id, query.from, query.to);
   }
 }
