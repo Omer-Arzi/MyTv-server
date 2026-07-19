@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
 import { DevUserMiddleware } from './common/middleware/dev-user.middleware';
+import { AuthModule } from './modules/auth/auth.module';
 import { HomeModule } from './modules/home/home.module';
 import { MeModule } from './modules/me/me.module';
 import { WatchlistModule } from './modules/watchlist/watchlist.module';
@@ -18,6 +19,7 @@ import { SyncModule } from './modules/sync/sync.module';
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
     PrismaModule,
+    AuthModule,
     HomeModule,
     MeModule,
     WatchlistModule,
