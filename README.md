@@ -44,6 +44,8 @@ npm run start         # no watch
 npm run build && npm run start:prod   # production build + run
 ```
 
+`start:prod` runs `node dist/src/main.js`, not the `dist/main.js` you might expect — `nest build`'s underlying `tsc` infers a project rootDir wide enough to cover every top-level tool directory it also compiles (`episode-release-refresh/`, `library-health/`, etc. — see `tsconfig.build.json`'s `exclude` list for what's deliberately left out), not just `src/`, so the whole `src/` tree nests one level deeper in `dist/` than a plain `src/main.ts` → `dist/main.js` build would. `railway.json`'s `startCommand` must stay in sync with this.
+
 ### Migrations
 
 ```bash
