@@ -1,5 +1,4 @@
 import 'reflect-metadata';
-import cookieParser from 'cookie-parser';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -8,15 +7,13 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.use(cookieParser());
-  // credentials:true + an explicit origin list is required for the session
-  // cookie to work at all — browsers reject `*` (or the default reflected-
-  // origin-with-no-credentials behavior) once a request needs to carry
-  // cookies cross-origin (the mobile PWA and this API live on different
-  // Railway subdomains). CORS_ORIGIN unset (local dev) falls back to
-  // reflecting any origin, matching the previous permissive app.enableCors().
+  // Session auth is a bearer token (Authorization header), not a cookie —
+  // see docs/auth.md's "Why a bearer token, not a cookie". No credentials
+  // flag needed; CORS_ORIGIN is still a reasonable allowlist (unset locally,
+  // where it falls back to reflecting any origin, matching the original
+  // permissive app.enableCors()).
   const corsOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : true;
-  app.enableCors({ origin: corsOrigin, credentials: true });
+  app.enableCors({ origin: corsOrigin });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -31,7 +28,8 @@ async function bootstrap() {
     .setDescription(
       'Personal TV tracking backend. This is the API contract the React Native client is built against. ' +
         'Single-user app: every request is treated as the same dev user (DevUserMiddleware). Deployments that set ' +
-        'APP_PASSWORD additionally require a session cookie from POST /auth/login on every route.',
+        'APP_PASSWORD additionally require an `Authorization: Bearer <token>` header (token from POST /auth/login) ' +
+        'on every route.',
     )
     .setVersion('0.1.0')
     .build();

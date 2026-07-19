@@ -3,11 +3,18 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
-import { SESSION_COOKIE_NAME } from './auth.constants';
 
 // Registered globally (see app.module.ts's APP_GUARD provider) — every
-// route requires a valid session cookie except ones marked @Public()
-// (POST /auth/login, POST /auth/logout).
+// route requires a valid session bearer token except ones marked @Public()
+// (POST /auth/login). A cookie-based session was tried first and abandoned
+// (see docs/auth.md's "Why a bearer token, not a cookie" section) — Railway
+// registers *.up.railway.app on the Public Suffix List specifically so
+// different customers' apps can't share cookies, which makes the mobile
+// PWA's and this API's Railway subdomains genuinely different *sites* to a
+// browser, not just different subdomains of one site. That makes the
+// session cookie a third-party cookie, which Safari/iOS — the exact
+// platform this app's PWA targets — blocks by default. A bearer token in
+// an Authorization header isn't subject to any of that.
 @Injectable()
 export class SessionAuthGuard implements CanActivate {
   constructor(
@@ -27,7 +34,8 @@ export class SessionAuthGuard implements CanActivate {
     if (!process.env.APP_PASSWORD) return true;
 
     const request = context.switchToHttp().getRequest<Request>();
-    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    const authHeader = request.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;
     if (!token) throw new UnauthorizedException('Not authenticated');
 
     try {
