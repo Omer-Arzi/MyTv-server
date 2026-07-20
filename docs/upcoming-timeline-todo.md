@@ -988,3 +988,83 @@ future-facing content the anchor aims at, never past it), so it was never implic
 - Confirmed via code-level investigation and reasoning about `VirtualizedList`'s documented behavior,
   not via a real device run by me — recommend the user re-verify Phase 8's manual step 2 again after
   this lands.
+
+---
+
+## Phase 12 — Bug fix: auto-load runaway on re-entry, confirmed via a real client-side logger
+
+### Report
+User reported, after using the deployed web app: (1) scrolling up manually stopped loading further
+past dates, (2) exiting Upcoming (switching to Watch List or another tab) and coming back in
+sometimes started loading way-back dates on its own, (3) the "jump to Today" tab-reselect stopped
+reliably landing. All three were reported together as one confusing session, with no way for me to
+reproduce any of them locally (bugs like this had historically only ever been catchable on a real
+device — see Phase 8's own note about RNTL's mocked `SectionList` never firing the relevant events).
+
+This time, a real client-side logger existed (`mobile/src/utils/remoteLogger.ts`, reporting to the
+server's `POST /client-logs`, readable via `railway logs`) — added specifically to close this gap.
+Reading the actual breadcrumb trail from the user's session turned this from "three vague reports I
+can't verify" into a precise, timestamped sequence:
+
+```
+watchlist_mode_change: upcoming        (sectionsCount goes to 9, anchored at index 3 — correct)
+route_change: Library
+route_change: Watchlist
+watchlist_mode_change: watchlist       (Upcoming panel now display:'none')
+upcoming_auto_load: previous, count=1  ← fired while the panel was HIDDEN
+watchlist_mode_change: upcoming
+upcoming_auto_load: previous, count=2
+route_change: Library
+route_change: Watchlist
+upcoming_auto_load: previous, count=1  ← 7 of these in under 2 seconds
+upcoming_auto_load: previous, count=1
+upcoming_auto_load: previous, count=1
+upcoming_auto_load: previous, count=1
+upcoming_auto_load: previous, count=1
+upcoming_auto_load: previous, count=1
+upcoming_auto_load: previous, count=2
+upcoming_scroll_to_today: tab_reselect, anchorSectionIndex=195, sectionsCount=201
+upcoming_scroll_retry × 6 (hit MAX_SCROLL_TO_TODAY_RETRIES and gave up)
+```
+
+### Root cause
+`onStartReached`/`onEndReached` (and the `canAutoLoadMorePages` gate they call — see Phase 9/11) were
+never gated on whether the Upcoming panel was actually the one currently visible. Both Shows-tab
+panels stay mounted for the whole session (`display:'none'` toggle, never a real unmount — see
+"Frontend structure" above), so these are live callbacks on a component that keeps existing whether or
+not it's on screen. Toggling `display:'none'` on/off made react-native-web's `SectionList` misreport
+its own viewport as "near the start" right at that transition — and since `hasAnchoredToToday` and
+`hasUserScrolled` were already `true` from the *previous* visit (neither resets on a mode switch, only
+on an actual date rollover), every other gate in `canAutoLoadMorePages` had already passed. The result:
+each hide/show toggle could trigger a fresh auto-load, and the resulting content shift could itself
+read as "near the start" again, producing the observed thrashing burst — 9 sections became 201 in
+under 2 seconds. That explains all three reported symptoms as one root cause, not three separate bugs:
+the runaway loading of far-past dates *is* "started loading way-back dates" (2); once sections ballooned
+to 201, Today's real section index (195) landed far outside `initialNumToRender={30}`'s rendered
+window, so both the tab-reselect anchor (3) and — most likely — further manual scroll-up gestures (1)
+had nothing left to reliably converge onto (the exact `scrollToIndex`-without-`getItemLayout` failure
+mode Phase 10 already documented, just triggered by a much larger, spurious distance this time).
+
+### Fix
+Added `isActive` as a required, first-checked gate to `canAutoLoadMorePages` (`upcomingGrouping.ts`) —
+auto-loading must never fire for a panel that isn't the one currently visible, full stop. Read via a
+ref (`isActiveRef`, reassigned every render) rather than closing over the `isActive` prop directly in
+`onStartReached`/`onEndReached`: the `display:'none'` toggle and the `SectionList`'s own internal
+scroll/layout events don't necessarily settle in the same tick as React committing the new render, so a
+callback closure captured just before a mode switch could otherwise still observe the OLD `isActive`
+value for one more event — a ref removes that race entirely.
+
+Verified structurally: rapidly bouncing between Home/Watchlist/Watch-List-mode/Upcoming-mode 16 times
+in a row (4 full cycles) produced zero `upcoming_auto_load` events and `sectionsCount` stayed at 9
+throughout, versus the real-device trail above. Real-device re-verification still recommended (see
+Phase 8/10's own notes on this class of bug), but this is the first time a fix in this file has been
+built directly from a real user session's evidence rather than local reasoning alone.
+
+### Remaining limitations
+- The exact mechanism by which react-native-web's `SectionList` misreports its viewport on a
+  `display:'none'` toggle is inferred from the breadcrumb evidence (timing + which gates were already
+  satisfied), not from reading react-native-web's own virtualization source — if a future case shows
+  auto-loads still slipping through under `isActive` gating, that source is the next place to look.
+- `remoteLogger.ts` cannot capture what happens during any given render tick, only discrete named
+  events — the "SectionList misreports its viewport" step is a reasonable inference from the data
+  available, not something a breadcrumb directly proved.
