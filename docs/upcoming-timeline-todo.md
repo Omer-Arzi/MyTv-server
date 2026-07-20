@@ -1068,3 +1068,73 @@ built directly from a real user session's evidence rather than local reasoning a
 - `remoteLogger.ts` cannot capture what happens during any given render tick, only discrete named
   events — the "SectionList misreports its viewport" step is a reasonable inference from the data
   available, not something a breadcrumb directly proved.
+
+---
+
+## Phase 14 — Bug fix: auto-load cap resetting itself on every prepend (the actual Phase 11 gap)
+
+### Report
+User reported: scrolling up inside Upcoming "just a little bit" started loading a large number of past
+dates very fast. `upcoming_auto_load` breadcrumbs (added in Phase 12) made this immediately
+diagnosable, not just describable:
+
+```
+upcoming_data_ready: totalItemCount=32,  sectionsCount=9,   pagesLoaded=1
+upcoming_auto_load: previous, autoLoadCount=1
+upcoming_data_ready: totalItemCount=98,  sectionsCount=33,  pagesLoaded=2
+upcoming_auto_load: previous, autoLoadCount=1   ← reset back to 1, not 2
+upcoming_auto_load: previous, autoLoadCount=1   ← reset again
+upcoming_data_ready: totalItemCount=162, sectionsCount=58,  pagesLoaded=3
+upcoming_data_ready: totalItemCount=241, sectionsCount=87,  pagesLoaded=4
+upcoming_auto_load: previous, autoLoadCount=1   ← still 1, never climbing
+upcoming_data_ready: totalItemCount=306, sectionsCount=114, pagesLoaded=5
+upcoming_auto_load: previous, autoLoadCount=2
+upcoming_data_ready: totalItemCount=350, sectionsCount=127, pagesLoaded=6
+... continuing to totalItemCount=523, sectionsCount=181, pagesLoaded=9
+```
+
+32 items became 523 across 9 pages in under 5 seconds, from one small scroll gesture.
+
+### Root cause
+`MAX_AUTO_LOAD_PAGES_SINCE_RESET = 2` exists specifically to bound this, but the logged
+`autoLoadCount` sequence (`1,1,1,1,2,1,1,2...`) shows it almost never got the chance to reach 2 before
+being reset back to 0 — meaning `onScroll`'s reset logic was firing on nearly every single auto-loaded
+page. The reset conditions (`isScrolledAwayFromStart`/`End`) were written correctly in isolation, but
+`UpcomingTimeline.tsx`'s `onScroll` handler only guarded the `hasUserScrolled` **latch** by
+`isProgrammaticScrollRef.current` — the counter **resets** right next to it, on the very next two
+lines, had no such guard, unconditionally zeroing the counter on *any* qualifying scroll event. Since
+prepending a page shifts the list's content without web properly compensating scroll position (the
+`maintainVisibleContentPosition` limitation this file already documents extensively — Phase 11), that
+shift itself fires an `onScroll` event reporting "away from start", indistinguishable from a real user
+scroll to this unguarded code. Each auto-load's own side effect was resetting the exact counter meant
+to cap it, before the next load ever had a chance to accumulate past 1.
+
+This is the real, previously-unfixed gap behind Phase 11's fix — Phase 11 correctly identified "web
+doesn't compensate scroll position on prepend" as the underlying issue and added the counter+reset
+mechanism to survive it, but didn't extend the *existing* programmatic-scroll suppression (already used
+for `hasUserScrolled`) to the resets living right beside it.
+
+### Fix
+Two changes, `src/components/UpcomingTimeline.tsx`:
+1. `onScroll`'s counter resets now also check `!isProgrammaticScrollRef.current`, matching the
+   `hasUserScrolled` latch immediately above them.
+2. `onStartReached`/`onEndReached` now call `markProgrammaticScroll()` themselves, right when
+   triggering `fetchPreviousPage()`/`fetchNextPage()` — not just `scrollToTodaySection` calls as
+   before. This marks the auto-load's own resulting content-shift as "ours" at the source, so the
+   `PROGRAMMATIC_SCROLL_SUPPRESS_MS` (1500ms) window already used elsewhere now also covers it.
+
+Verified locally (headless, real `SectionList`, not a mock): repeated small scroll-up gestures loaded
+exactly one page and stopped, versus an uncontrolled cascade before the fix; waiting past the
+suppression window and scrolling again correctly loaded a further page afterward, confirming
+pagination itself still works — it's the *runaway*, not scrolling-triggered loading in general, that's
+fixed.
+
+### Remaining limitations
+- `markProgrammaticScroll()`'s fixed 1500ms window means a user who scrolls hard enough to genuinely
+  leave the edge *within* that exact window after an auto-load won't have `hasUserScrolled`/the
+  counter reset register until it elapses — accepted as a reasonable trade-off (matches how the same
+  constant already behaves for `scrollToTodaySection`), not something this pass tried to make
+  adaptive.
+- Confirmed via a real user session's breadcrumbs (Phase 12's logging) and a local headless
+  reproduction, not a native-device re-test of this exact fix — recommend confirming the "scroll up a
+  little" repro no longer runs away on a real device.
