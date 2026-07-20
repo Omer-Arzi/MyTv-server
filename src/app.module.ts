@@ -13,6 +13,7 @@ import { MigrationWorkbenchModule } from './modules/migration-workbench/migratio
 import { SyncSchedulerModule } from './modules/sync-scheduler/sync-scheduler.module';
 import { SearchModule } from './modules/search/search.module';
 import { SyncModule } from './modules/sync/sync.module';
+import { ClientLogsModule } from './modules/client-logs/client-logs.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { SyncModule } from './modules/sync/sync.module';
     SyncSchedulerModule,
     SearchModule,
     SyncModule,
+    ClientLogsModule,
   ],
 })
 export class AppModule implements NestModule {
