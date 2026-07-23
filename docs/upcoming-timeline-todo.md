@@ -1192,3 +1192,67 @@ Three constant changes, no logic restructuring (`src/utils/upcomingGrouping.ts`,
   already many-times-patched component; worth doing if this still isn't comfortable on a real device.
 - Verified via existing unit tests (`upcomingGrouping.test.ts`, all passing unchanged) and `tsc
   --noEmit`, not a fresh native/web device repro of this exact change.
+
+## Phase 16 — Web: replace scroll-triggered auto-load with explicit Load More buttons
+
+### Motivation
+Despite Phase 15's tuning, a bounded auto-load on web could still produce a visible jump — the
+underlying gap (react-native-web's `SectionList` not honoring `maintainVisibleContentPosition` on
+prepend/append) was never actually fixed by Phases 11/12/14/15, only mitigated smaller and made harder
+to trigger. Rather than continue chasing threshold values, the user asked to replace the *autonomous*
+trigger entirely with explicit, user-initiated "Load earlier releases" (up) / "Load more upcoming"
+(down) buttons on web — mobile web (the PWA opened in a phone's browser) specifically, not the
+installed native app. In React Native terms this is simply `Platform.OS === 'web'`: Expo/RN doesn't
+distinguish "mobile browser" from "desktop browser," both report `Platform.OS === 'web'`; only the
+installed native app reports `'ios'`/`'android'`. Native has no such bug (its `SectionList` does
+respect `maintainVisibleContentPosition`) and keeps today's auto-load-on-scroll completely unchanged.
+
+### Design decisions
+- Web only, via this codebase's established inline `Platform.OS === 'web'` branching convention (no
+  `.web.tsx` file split) — precedent: `src/utils/appAlert.ts`, `src/screens/HomeScreen.tsx`,
+  `src/components/SearchResultCard.tsx`/`SeasonHeader.tsx`.
+- Initial load window unchanged (`UPCOMING_INITIAL_PAST_DAYS = 3` / `UPCOMING_INITIAL_FUTURE_DAYS =
+  30`) on both platforms.
+- New web-only page sizes, distinct from native's `UPCOMING_PAGE_WINDOW_DAYS` (10): up button loads 7
+  days of past content per press, down button loads 30 days of future content per press — a single
+  deliberate tap is expected to load a more substantial, self-explanatory chunk than the small
+  increments Phase 15 tuned native's *invisible* auto-trigger down to.
+- Native's entire auto-load-runaway-prevention machinery (`hasUserScrolled`,
+  `autoPreviousLoadCount`/`autoNextLoadCount`, `canAutoLoadMorePages`, `markProgrammaticScroll`, the
+  `onScroll` handler) is left completely untouched — only the `onStartReached`/`onEndReached` prop
+  *values* are conditionally `undefined` on web, so all of that logic simply never runs there rather
+  than being restructured or removed.
+- New local `LoadMoreButton` component (not a new shared `Button.tsx` — this app has no such component,
+  every tappable affordance is a locally-styled `Pressable`), reusing `ErrorState.tsx`'s `onRetry`
+  button styling verbatim (solid `colors.accent` pill, dark text).
+- New `upcoming_manual_load` remoteLogger breadcrumb (distinct from `upcoming_auto_load`) so Railway
+  logs can tell the two mechanisms apart — the same diagnostic pattern that made Phases 12/14/15
+  possible in the first place.
+
+### Fix
+File-by-file (`src/utils/upcomingGrouping.ts`, `src/components/UpcomingTimeline.tsx`):
+1. New constants `UPCOMING_WEB_LOAD_PAST_DAYS = 7` / `UPCOMING_WEB_LOAD_FUTURE_DAYS = 30`.
+2. `getPreviousUpcomingWindow`/`getNextUpcomingWindow` gained an optional `days` parameter, defaulting
+   to `UPCOMING_PAGE_WINDOW_DAYS` — every existing native call site is unaffected; `getPreviousPageParam`/
+   `getNextPageParam` pass the new web constants when `Platform.OS === 'web'`.
+3. `onStartReached`/`onEndReached` props are `Platform.OS === 'web' ? undefined : <existing handler>`.
+4. `ListHeaderComponent`/`ListFooterComponent` render a `LoadMoreButton` on web (gated on
+   `hasPreviousPage`/`hasNextPage`, swapped for an `ActivityIndicator` mid-fetch) instead of native's
+   spinner-only header/footer.
+
+### Verified
+Full local repro via a headless-Chromium session against the real dev server (Expo web + the actual
+NestJS API, not mocked): plain scrolling up and down produced **zero** `/me/upcoming` network calls;
+clicking "Load earlier releases" fired exactly one request spanning precisely 7 days
+(`from=2026-07-13&to=2026-07-20`); clicking "Load more upcoming" fired exactly one request spanning
+precisely 30 days (`from=2026-08-23&to=2026-09-22`); no console errors; both buttons correctly
+disappeared/reappeared per `hasPreviousPage`/`hasNextPage`. Unit tests extended in
+`upcomingGrouping.test.ts` pin the same day-count math.
+
+### Remaining limitations
+- A button press still prepends/appends a full window's worth of content in one shot, so the
+  underlying uncompensated-scroll-offset gap (Phases 11/12/14) can still, in principle, produce *some*
+  visual shift on press — this removes the *autonomous/surprise* trigger (arbitrary incidental
+  scrolling), not the react-native-web platform gap itself. In practice the local repro showed the view
+  staying anchored at the button's position (top or bottom) with new content simply extending past it,
+  not jumping — but this hasn't been checked on a real mobile device yet.
