@@ -1138,3 +1138,57 @@ fixed.
 - Confirmed via a real user session's breadcrumbs (Phase 12's logging) and a local headless
   reproduction, not a native-device re-test of this exact fix — recommend confirming the "scroll up a
   little" repro no longer runs away on a real device.
+
+## Phase 15 — Bug fix: even a single scroll (bounded, within cap) still read as "loads lots of past shows and jumps there"
+
+### Report
+User reported: on the Upcoming screen, a single scroll — up or down — loads a large number of past
+shows and jumps there. Distinct from Phase 14 (which was an *unbounded* runaway past the cap); this
+was reported *after* Phase 14 shipped.
+
+Reproduced directly from a real production session's Railway logs (`upcoming_auto_load`/
+`upcoming_data_ready` breadcrumbs, same mechanism as Phase 12/14's diagnosis):
+
+```
+upcoming_scroll_to_today   anchorSectionIndex=4, sectionsCount=9
+upcoming_auto_load         direction=previous, autoLoadCount=1
+upcoming_data_ready        totalItemCount=95, sectionsCount=33, pagesLoaded=2   (was 26/9/1)
+```
+
+One single auto-load — never even reaching `MAX_AUTO_LOAD_PAGES_SINCE_RESET` (2) — nearly
+quadrupled the item count and tripled the section count, 2.4 seconds after landing on Today.
+
+### Root cause
+Phase 14 correctly bounded the *runaway*, but two things made even one bounded load feel like "lots of
+past shows, and a jump":
+1. `UPCOMING_PAGE_WINDOW_DAYS` (30) is large relative to what's already loaded right after the initial
+   anchor — for a normally-populated library, a single 30-day prepend is routinely dozens of items and
+   20+ sections landing at once.
+2. `onStartReachedThreshold`/`onEndReachedThreshold` (2 — "within 2 screens of the edge") is very
+   generous, and the Today anchor already sits close to the list's start by design (only
+   `UPCOMING_INITIAL_PAST_DAYS`=3 days of past context above it, Phase 10) — so almost any scroll,
+   including one not actually aimed at browsing further history, already satisfies RN's own "near the
+   start" heuristic. Combined with `SCROLL_RESET_DISTANCE_PX` (200) being smaller than the anchor's
+   typical resting distance from true offset 0, a small, incidental scroll could latch
+   `hasUserScrolled` and let `onStartReached` fire almost immediately.
+
+### Fix
+Three constant changes, no logic restructuring (`src/utils/upcomingGrouping.ts`,
+`src/components/UpcomingTimeline.tsx`):
+1. `UPCOMING_PAGE_WINDOW_DAYS`: 30 → 10 — shrinks how much a single auto-load can visibly inject.
+2. `SCROLL_RESET_DISTANCE_PX`: 200 → 400 — requires a clearly deliberate scroll (more than a screen's
+   worth on most devices) before latching `hasUserScrolled`/resetting the auto-load caps, rather than
+   incidental scroll settling near the anchor's resting position.
+3. `onStartReachedThreshold`/`onEndReachedThreshold`: 2 → 0.5 — requires genuinely nearing the loaded
+   edge before RN's own threshold heuristic considers it "reached," instead of firing from 2 screens
+   away.
+
+### Remaining limitations
+- Does not fix the underlying react-native-web `maintainVisibleContentPosition` gap itself (Phases
+  11/12/14) — a bounded auto-load can still produce a *smaller* visible jump on web, this pass just
+  shrinks it and makes it require more deliberate intent to trigger. A true fix would mean manually
+  compensating scroll offset after a prepend (tracking content-height delta via `onContentSizeChange`
+  and adjusting via the scroll responder) — not attempted here given the added complexity/risk on an
+  already many-times-patched component; worth doing if this still isn't comfortable on a real device.
+- Verified via existing unit tests (`upcomingGrouping.test.ts`, all passing unchanged) and `tsc
+  --noEmit`, not a fresh native/web device repro of this exact change.
