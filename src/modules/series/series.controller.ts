@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBadRequestResponse, ApiBody, ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiBody, ApiConflictResponse, ApiCreatedResponse, ApiNoContentResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types';
 import { WatchlistService } from '../watchlist/watchlist.service';
@@ -13,6 +13,8 @@ import { SeriesListPageDto } from './dto/series-list-page.dto';
 import { SeriesListQueryDto } from './dto/series-list-query.dto';
 import { UpdateSeriesStatusDto } from './dto/update-series-status.dto';
 import { UpdateSeriesStatusResponseDto } from './dto/update-series-status-response.dto';
+import { DeleteSeriesRequestDto } from './dto/delete-series-request.dto';
+import { DeleteSeriesResponseDto } from './dto/delete-series-response.dto';
 
 @ApiTags('series')
 @Controller('series')
@@ -105,6 +107,31 @@ export class SeriesController {
     @Param('seriesId') seriesId: string,
   ): Promise<void> {
     return this.watchlistService.remove(user.id, seriesId);
+  }
+
+  @Delete(':seriesId')
+  @ApiOperation({
+    summary: 'Hard-delete a series and everything under it',
+    description:
+      'A true, irreversible delete of the whole Series row — every season, episode, watch, rating, provider-' +
+      'identity decision, and sync/migration history under it goes with it. This is NOT the same as ' +
+      '"remove from watchlist," which only ever removes the WatchlistItem row and leaves the catalog and watch ' +
+      'history intact. Meant for genuine duplicate/corrupted library entries (e.g. two Series rows that turn out ' +
+      'to resolve to the same provider identity), not as a routine action. Omit confirm (or pass false) to get a ' +
+      'preview — title and season/episode/watched-episode counts — without deleting anything; only confirm: true ' +
+      'actually deletes. Refuses to delete a series any OTHER user still tracks.',
+  })
+  @ApiParam({ name: 'seriesId', description: 'Series id', example: '3f6b1e2a-8c1d-4b2a-9e2e-111111111111' })
+  @ApiBody({ type: DeleteSeriesRequestDto })
+  @ApiOkResponse({ type: DeleteSeriesResponseDto })
+  @ApiNotFoundResponse({ description: 'Series not found' })
+  @ApiConflictResponse({ description: 'Series is tracked by another user — hard-delete refused' })
+  deleteSeries(
+    @CurrentUser() user: RequestUser,
+    @Param('seriesId') seriesId: string,
+    @Body() body: DeleteSeriesRequestDto,
+  ): Promise<DeleteSeriesResponseDto> {
+    return this.seriesService.deleteSeries(user.id, seriesId, body.confirm ?? false);
   }
 
   @Post(':seriesId/watch-all-released')

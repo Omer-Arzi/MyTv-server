@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { UserSeriesStatus } from '@prisma/client';
 import { toEpisodeSummary, toSeriesSummary } from '../../common/mappers';
 import { hasConfirmedExternalId } from '../../common/has-confirmed-external-id';
@@ -7,6 +7,7 @@ import { SeriesDetailDto } from './dto/series-detail.dto';
 import { SeriesListPageDto } from './dto/series-list-page.dto';
 import { ManualUserStatus } from './dto/update-series-status.dto';
 import { UpdateSeriesStatusResponseDto } from './dto/update-series-status-response.dto';
+import { DeleteSeriesResponseDto } from './dto/delete-series-response.dto';
 import {
   buildLibraryWhere,
   deriveManualStatusUpdate,
@@ -197,5 +198,57 @@ export class SeriesService {
       userStatus: decision.userStatus,
       nextEpisode: nextEpisode ? toEpisodeSummary(nextEpisode) : null,
     };
+  }
+
+  // DELETE /series/:seriesId — a true, irreversible hard delete of the
+  // whole Series row (and every Season/Episode/EpisodeWatch/ExternalIds/
+  // SeriesSyncStatus/ProviderIdentityDecision/MigrationHistory/SeriesRating
+  // under it, all via the schema's ON DELETE CASCADE chain) — the escape
+  // hatch this app had no equivalent of before: "remove from watchlist"
+  // only ever touches the WatchlistItem row, never the underlying catalog
+  // data. Meant for genuine duplicate/corrupted entries (e.g. two Series
+  // rows that turn out to resolve to the same provider identity — see
+  // library-health/run-provider-confirmation-for-decision.ts's duplicate-
+  // identity error), not as a routine action.
+  //
+  // confirm !== true always returns a preview (counts only, deleted:
+  // false) without writing anything — callers must show this to the user
+  // before ever passing confirm: true.
+  async deleteSeries(userId: string, seriesId: string, confirm: boolean): Promise<DeleteSeriesResponseDto> {
+    const series = await this.prisma.series.findUnique({
+      where: { id: seriesId },
+      select: { id: true, title: true, seasons: { select: { id: true, episodes: { select: { id: true } } } } },
+    });
+    if (!series) {
+      throw new NotFoundException(`Series ${seriesId} not found`);
+    }
+
+    const episodeIds = series.seasons.flatMap((s) => s.episodes.map((e) => e.id));
+    const seasonCount = series.seasons.length;
+    const episodeCount = episodeIds.length;
+
+    // Global-catalog safety check: Series/Season/Episode rows are shared
+    // across users (only UserSeriesProgress/WatchlistItem/EpisodeWatch are
+    // per-user) — a hard delete must never destroy another user's tracked
+    // series just because this user also happens to reference the same
+    // row. Currently unreachable in practice (single hardcoded dev user —
+    // see DevUserMiddleware) but this is exactly the invariant real auth
+    // would need respected from day one.
+    const [otherProgressCount, otherWatchlistCount, watchedEpisodeCount] = await Promise.all([
+      this.prisma.userSeriesProgress.count({ where: { seriesId, userId: { not: userId } } }),
+      this.prisma.watchlistItem.count({ where: { seriesId, userId: { not: userId } } }),
+      episodeIds.length > 0 ? this.prisma.episodeWatch.count({ where: { userId, episodeId: { in: episodeIds } } }) : Promise.resolve(0),
+    ]);
+    if (otherProgressCount > 0 || otherWatchlistCount > 0) {
+      throw new ConflictException(`Series ${seriesId} is tracked by another user — hard-delete would destroy their data too. Not deleted.`);
+    }
+
+    if (!confirm) {
+      return { seriesId: series.id, title: series.title, seasonCount, episodeCount, watchedEpisodeCount, deleted: false };
+    }
+
+    await this.prisma.series.delete({ where: { id: seriesId } });
+
+    return { seriesId: series.id, title: series.title, seasonCount, episodeCount, watchedEpisodeCount, deleted: true };
   }
 }
