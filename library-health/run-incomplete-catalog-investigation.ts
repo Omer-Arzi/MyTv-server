@@ -175,6 +175,7 @@ async function main() {
           providerReleaseStatus,
           currentUserStatus: health.userStatus!,
           currentNextEpisodeId: health.nextEpisodeId,
+          seasonShrinkReviewed: false,
           now: generatedAt,
         });
 

@@ -347,6 +347,7 @@ async function main() {
         providerReleaseStatus: fetched.releaseStatus,
         currentUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
         currentNextEpisodeId: local.progress?.nextEpisodeId ?? null,
+        seasonShrinkReviewed: false,
         now: generatedAt,
       });
 

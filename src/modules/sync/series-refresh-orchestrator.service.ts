@@ -122,6 +122,11 @@ export class SeriesRefreshOrchestratorService {
     const eligibility = checkSeriesEligibility({ userStatus: progress.userStatus, tmdbId, title: series.title });
     if (!eligibility.eligible) return { kind: 'ineligible', reason: eligibility.reason! };
 
+    const identityDecision = await this.prisma.providerIdentityDecision.findUnique({
+      where: { userId_seriesId: { userId, seriesId } },
+      select: { seasonShrinkReviewed: true },
+    });
+
     const existingSyncStatus = series.syncStatus;
 
     if (options.onlyIfStale) {
@@ -151,6 +156,7 @@ export class SeriesRefreshOrchestratorService {
       tmdbId,
       userStatus: progress.userStatus,
       nextEpisodeId: progress.nextEpisodeId,
+      seasonShrinkReviewed: identityDecision?.seasonShrinkReviewed ?? false,
       episodes: series.seasons.flatMap((season) =>
         season.episodes.map((ep) => ({
           id: ep.id,

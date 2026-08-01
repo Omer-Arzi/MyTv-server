@@ -60,6 +60,7 @@ interface SeriesRow {
   userStatus: UserSeriesStatus;
   nextEpisodeId: string | null;
   episodes: LocalEpisodeInput[];
+  seasonShrinkReviewed: boolean;
 }
 
 async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promise<SeriesRow[]> {
@@ -85,6 +86,12 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
     },
   });
 
+  const identityDecisions = await prisma.providerIdentityDecision.findMany({
+    where: { userId, seriesId: { in: progresses.map((p) => p.series.id) } },
+    select: { seriesId: true, seasonShrinkReviewed: true },
+  });
+  const seasonShrinkReviewedBySeriesId = new Map(identityDecisions.map((d) => [d.seriesId, d.seasonShrinkReviewed]));
+
   const seriesIds = progresses.map((p) => p.series.id);
   const watches = await prisma.episodeWatch.findMany({
     where: { userId, episode: { season: { seriesId: { in: seriesIds } } } },
@@ -99,6 +106,7 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
     tmdbId: p.series.externalIds?.tmdbId ?? null,
     userStatus: p.userStatus,
     nextEpisodeId: p.nextEpisodeId,
+    seasonShrinkReviewed: seasonShrinkReviewedBySeriesId.get(p.series.id) ?? false,
     episodes: p.series.seasons.flatMap((season) =>
       season.episodes.map((ep) => ({
         id: ep.id,
@@ -204,6 +212,7 @@ async function main() {
         providerReleaseStatus,
         currentUserStatus: series.userStatus,
         currentNextEpisodeId: series.nextEpisodeId,
+        seasonShrinkReviewed: series.seasonShrinkReviewed,
       });
 
       const operatingOutcome = classifyRefreshOperatingOutcome(comparison.classification);

@@ -218,6 +218,20 @@ export interface CompareSeriesCatalogInput {
   providerReleaseStatus: ReleaseStatus;
   currentUserStatus: UserSeriesStatus;
   currentNextEpisodeId: string | null;
+  // Mirrors ProviderIdentityDecision.seasonShrinkReviewed (see
+  // migration-workbench's reviewSeasonShrink / the schema field comment).
+  // A season that's entirely absent from the provider's response is the
+  // exact, permanent signature of a local catalog whose season boundaries
+  // were deliberately preserved as legacy orphans by an already-reviewed
+  // Pipeline A migration (e.g. Bleach's 15 TV-Time-era arc "seasons" that
+  // will never exist on TMDb, which only ever had Specials/Bleach/TYBW) —
+  // once a human has reviewed that shape for THIS series, it must stop
+  // re-blocking every future refresh forever. Deliberately does NOT affect
+  // a season that still exists on the provider but has genuinely fewer
+  // episodes than local ("shrank," not "missing") — that's a live
+  // renumbering signal, not a known permanent shape, and always blocks
+  // regardless of this flag.
+  seasonShrinkReviewed: boolean;
   now?: Date;
 }
 
@@ -329,11 +343,17 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
   // local catalog vs. TMDb's single absolute-numbered season) — this must
   // never be treated as "episodes were removed," only ever reported.
   let seasonShiftDetected = false;
+  const reviewedOrphanSeasons = new Set<number>();
   for (const [seasonNumber, localCount] of localCountBySeason) {
     const providerCount = providerCountBySeason.get(seasonNumber);
     if (providerCount === undefined) {
-      seasonShiftDetected = true;
-      warnings.push(`season ${seasonNumber} (${localCount} local episode(s)) is missing entirely from the provider response`);
+      if (input.seasonShrinkReviewed) {
+        reviewedOrphanSeasons.add(seasonNumber);
+        warnings.push(`season ${seasonNumber} (${localCount} local episode(s)) is missing entirely from the provider response — previously reviewed for this series, not blocking`);
+      } else {
+        seasonShiftDetected = true;
+        warnings.push(`season ${seasonNumber} (${localCount} local episode(s)) is missing entirely from the provider response`);
+      }
     } else if (providerCount < localCount) {
       seasonShiftDetected = true;
       warnings.push(`season ${seasonNumber} shrank: ${localCount} local episode(s) vs. ${providerCount} from the provider`);
@@ -349,6 +369,7 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
   const misalignedWatchedEpisodes: LocalEpisodeInput[] = [];
   for (const ep of input.localEpisodes) {
     if (!ep.watched) continue;
+    if (reviewedOrphanSeasons.has(ep.seasonNumber)) continue; // whole season already reviewed as a permanent orphan — not a new alignment risk
     if (!providerByKey.has(episodeKey(ep.seasonNumber, ep.episodeNumber))) {
       misalignedWatchedEpisodes.push(ep);
     }

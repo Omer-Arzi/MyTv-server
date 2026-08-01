@@ -166,6 +166,7 @@ async function main() {
     providerReleaseStatus: mapTvmazeStatusToReleaseStatus(show.status) as typeof series.releaseStatus,
     currentUserStatus: progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
     currentNextEpisodeId: progress?.nextEpisodeId ?? null,
+    seasonShrinkReviewed: false,
     now: generatedAt,
   });
 

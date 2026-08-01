@@ -42,6 +42,7 @@ function runFullPipelineDecision(input: { localTitle: string; localEpisodes: Loc
     providerReleaseStatus: 'ENDED' as never,
     currentUserStatus: UserSeriesStatus.WATCHING,
     currentNextEpisodeId: null,
+    seasonShrinkReviewed: false,
     now,
   });
   const orphanedWatchedEpisodes = findOrphanedWatchedEpisodes(input.localEpisodes, input.providerEpisodes);

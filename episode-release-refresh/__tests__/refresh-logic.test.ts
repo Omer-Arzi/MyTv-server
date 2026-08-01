@@ -115,6 +115,7 @@ describe('compareSeriesCatalog', () => {
     providerReleaseStatus: ReleaseStatus.RETURNING,
     currentUserStatus: UserSeriesStatus.WATCHING,
     currentNextEpisodeId: null as string | null,
+    seasonShrinkReviewed: false,
     now: NOW,
   };
 
@@ -204,6 +205,65 @@ describe('compareSeriesCatalog', () => {
     const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 2 }), provider({ seasonNumber: 1, episodeNumber: 3 })];
 
     const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes });
+
+    expect(result.classification).toBe('NEEDS_MANUAL_REVIEW');
+    expect(result.warnings.some((w) => w.includes('watched episode S1E1'))).toBe(true);
+  });
+
+  // Real-world case this guards against: Bleach's ProviderIdentityDecision
+  // already has seasonShrinkReviewed: true from its July catalog migration,
+  // which deliberately preserved 15 TV-Time-era "seasons" that will never
+  // exist on TMDb (which only has Specials/Bleach/Thousand-Year Blood War).
+  // Without this exemption, Pipeline B would permanently re-block every
+  // future refresh for a title that already went through a reviewed
+  // migration — see docs/stable-version-migration-todo.md.
+  it('does not classify RISKY_DO_NOT_APPLY for a season missing entirely once seasonShrinkReviewed is true', () => {
+    const localEpisodes = [local({ seasonNumber: 1, episodeNumber: 1, watched: true }), local({ seasonNumber: 2, episodeNumber: 1, watched: true })];
+    const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 1 })];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, seasonShrinkReviewed: true });
+
+    expect(result.classification).toBe('NO_CHANGE');
+    expect(result.warnings.some((w) => w.includes('missing entirely') && w.includes('previously reviewed'))).toBe(true);
+  });
+
+  it('does not flag a watched episode in a reviewed, entirely-missing season as misaligned', () => {
+    const localEpisodes = [
+      local({ seasonNumber: 1, episodeNumber: 1, watched: true }),
+      local({ seasonNumber: 2, episodeNumber: 1, watched: true }),
+      local({ seasonNumber: 2, episodeNumber: 2, watched: true }),
+    ];
+    const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 1 })];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, seasonShrinkReviewed: true });
+
+    expect(result.classification).toBe('NO_CHANGE');
+    expect(result.warnings.some((w) => w.includes('S2E1'))).toBe(false);
+    expect(result.warnings.some((w) => w.includes('S2E2'))).toBe(false);
+  });
+
+  it('still classifies RISKY_DO_NOT_APPLY for a genuine in-provider shrink even when seasonShrinkReviewed is true', () => {
+    const localEpisodes = [
+      local({ seasonNumber: 1, episodeNumber: 1, watched: true }),
+      local({ seasonNumber: 1, episodeNumber: 2, watched: true }),
+      local({ seasonNumber: 1, episodeNumber: 3, watched: false }),
+    ];
+    // Season 1 still exists on the provider, but with fewer episodes than
+    // local — a live renumbering signal, not a known/reviewed permanent
+    // shape, so this must always block regardless of the reviewed flag.
+    const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 1 }), provider({ seasonNumber: 1, episodeNumber: 2 })];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, seasonShrinkReviewed: true });
+
+    expect(result.classification).toBe('RISKY_DO_NOT_APPLY');
+    expect(result.warnings.some((w) => w.includes('shrank'))).toBe(true);
+  });
+
+  it('still requires review for a watched-episode misalignment in a season the provider does have, even when seasonShrinkReviewed is true', () => {
+    const localEpisodes = [local({ seasonNumber: 1, episodeNumber: 1, watched: true }), local({ seasonNumber: 1, episodeNumber: 2, watched: false })];
+    const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 2 }), provider({ seasonNumber: 1, episodeNumber: 3 })];
+
+    const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, seasonShrinkReviewed: true });
 
     expect(result.classification).toBe('NEEDS_MANUAL_REVIEW');
     expect(result.warnings.some((w) => w.includes('watched episode S1E1'))).toBe(true);

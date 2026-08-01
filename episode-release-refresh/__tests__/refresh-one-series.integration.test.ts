@@ -64,6 +64,7 @@ describeIfDbConfigured('refreshOneSeries (integration, real Postgres + mocked TM
       tmdbId,
       userStatus,
       nextEpisodeId: null,
+      seasonShrinkReviewed: false,
       episodes: [
         { id: ep1.id, seasonNumber: 1, episodeNumber: 1, title: null, overview: null, airDate: PAST, imageUrl: null, runtimeMinutes: null, watched: true },
       ],

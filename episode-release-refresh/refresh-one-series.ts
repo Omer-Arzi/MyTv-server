@@ -35,6 +35,10 @@ export interface SeriesRow {
   userStatus: UserSeriesStatus;
   nextEpisodeId: string | null;
   episodes: LocalEpisodeInput[];
+  // ProviderIdentityDecision.seasonShrinkReviewed for this series/user, or
+  // false when no decision row exists at all — see compareSeriesCatalog's
+  // seasonShrinkReviewed doc comment for what this unlocks.
+  seasonShrinkReviewed: boolean;
 }
 
 export interface RefreshOneSeriesInput {
@@ -120,6 +124,7 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
       providerReleaseStatus,
       currentUserStatus: series.userStatus,
       currentNextEpisodeId: series.nextEpisodeId,
+      seasonShrinkReviewed: series.seasonShrinkReviewed,
       now,
     });
 

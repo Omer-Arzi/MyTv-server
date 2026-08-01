@@ -125,6 +125,12 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
   });
   const watchedEpisodeIds = new Set(watches.map((w) => w.episodeId));
 
+  const identityDecisions = await prisma.providerIdentityDecision.findMany({
+    where: { userId, seriesId: { in: seriesIds } },
+    select: { seriesId: true, seasonShrinkReviewed: true },
+  });
+  const seasonShrinkReviewedBySeriesId = new Map(identityDecisions.map((d) => [d.seriesId, d.seasonShrinkReviewed]));
+
   return progresses.map((p) => ({
     id: p.series.id,
     title: p.series.title,
@@ -132,6 +138,7 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
     tmdbId: p.series.externalIds?.tmdbId ?? null,
     userStatus: p.userStatus,
     nextEpisodeId: p.nextEpisodeId,
+    seasonShrinkReviewed: seasonShrinkReviewedBySeriesId.get(p.series.id) ?? false,
     episodes: p.series.seasons.flatMap((season) =>
       season.episodes.map((ep) => ({
         id: ep.id,

@@ -262,6 +262,13 @@ export async function runProviderConfirmationForDecision(input: RunProviderConfi
       providerReleaseStatus: fetched.releaseStatus,
       currentUserStatus: local.progress?.userStatus ?? UserSeriesStatus.UNKNOWN,
       currentNextEpisodeId: local.progress?.nextEpisodeId ?? null,
+      // Pipeline A's own season-shrink gating (detectRealSeasonShrink +
+      // decision.seasonShrinkReviewed, below) is authoritative and
+      // untouched by this flag — always false here so this call's
+      // classification/warnings (used for reporting only) stay exactly as
+      // they were before Pipeline B gained its own seasonShrinkReviewed
+      // exemption. See refresh-logic.ts's compareSeriesCatalog doc comment.
+      seasonShrinkReviewed: false,
       now: generatedAt,
     });
 
