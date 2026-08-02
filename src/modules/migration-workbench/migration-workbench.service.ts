@@ -98,18 +98,25 @@ export class MigrationWorkbenchService {
       for (const candidate of report.nextManualReviewCandidates) items.push(fromManualReviewCandidate(candidate));
     }
 
-    const liveBlockedItems = await this.loadLiveBlockedItems(
-      userId,
-      new Set(items.map((i) => i.seriesId)),
-    );
-    items.push(...liveBlockedItems);
+    // loadLiveBlockedItems runs OUTSIDE invalidateStaleItems deliberately —
+    // invalidateStaleItems' "a non-rolled-back MigrationHistory row means
+    // fully resolved, drop it" rule is correct for the static-report cache
+    // it was designed for (that cache only ever represents Pipeline A's
+    // ONE-TIME migration proposal, so any completed migration really does
+    // resolve it forever), but wrong here: a series can be legitimately
+    // migrated once (its original identity confirmation) and later get
+    // re-flagged by Pipeline B for a completely unrelated reason (a new
+    // season). Real incident this caused before this reordering: Batman:
+    // Caped Crusader has a real, non-rolled-back MigrationHistory row from
+    // its original July confirmation — that alone was silently dropping
+    // its brand new, unrelated live-blocked entry every time, even though
+    // the new season it's actually blocked on was never applied.
+    const liveBlockedItems = await this.loadLiveBlockedItems(userId, new Set(items.map((i) => i.seriesId)));
 
-    if (items.length === 0) return [];
-
-    const dedupedItems = dedupeBySeriesId(items);
+    if (items.length === 0 && liveBlockedItems.length === 0) return [];
 
     const seriesRows = await this.prisma.series.findMany({
-      where: { id: { in: dedupedItems.map((i) => i.seriesId) } },
+      where: { id: { in: [...items, ...liveBlockedItems].map((i) => i.seriesId) } },
       select: { id: true, title: true, posterUrl: true },
     });
     const posterBySeriesId = new Map(seriesRows.map((s) => [s.id, s.posterUrl]));
@@ -118,12 +125,14 @@ export class MigrationWorkbenchService {
     // surfaced as a broken item.
     const knownSeriesIds = new Set(seriesRows.map((s) => s.id));
 
-    const liveItems = await this.invalidateStaleItems(
+    const invalidatedStaticItems = await this.invalidateStaleItems(
       userId,
-      dedupedItems.filter((i) => knownSeriesIds.has(i.seriesId)),
+      dedupeBySeriesId(items).filter((i) => knownSeriesIds.has(i.seriesId)),
     );
 
-    return liveItems
+    const dedupedItems = dedupeBySeriesId([...invalidatedStaticItems, ...liveBlockedItems.filter((i) => knownSeriesIds.has(i.seriesId))]);
+
+    return dedupedItems
       .sort((a, b) => a.title.localeCompare(b.title))
       .map((i) => ({
         seriesId: i.seriesId,

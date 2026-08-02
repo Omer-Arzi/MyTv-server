@@ -224,4 +224,48 @@ describeIfDbConfigured('MigrationWorkbenchService.sweepBlockedSeries / list() li
 
     expect(items.find((i) => i.seriesId === seriesId)).toBeUndefined();
   });
+
+  // Regression test for the real Batman: Caped Crusader production bug: a
+  // series with a real, non-rolled-back MigrationHistory row from an
+  // EARLIER, unrelated migration (its original identity confirmation,
+  // weeks prior) was being silently dropped from list() every time —
+  // invalidateStaleItems' "any completed migration ever = fully resolved,
+  // drop it" rule, which is correct for the static-report cache it was
+  // designed for, was wrongly also swallowing a brand new, unrelated
+  // live-blocked entry for the exact same series. General fix (not
+  // Batman-specific): loadLiveBlockedItems must never be filtered by
+  // invalidateStaleItems' migration-history check — any series currently
+  // flagged live must survive it.
+  it('surfaces a live-blocked series even when it has an older, unrelated completed migration on file', async () => {
+    const user = await createFixtureUser();
+    const tmdbId = `9${randomUUID().replace(/-/g, '').slice(0, 6)}`;
+    const { seriesId, title } = await createBlockedFixtureSeries(user.id, tmdbId);
+    // A real, non-rolled-back MigrationHistory row for THIS series, from a
+    // prior, unrelated migration — exactly Batman's real shape.
+    await prisma.migrationHistory.create({
+      data: {
+        userId: user.id,
+        seriesId,
+        seriesTitle: title,
+        classification: 'AUTO_MIGRATE',
+        sourceCategory: 'READY_AUTOMATIC',
+        providerAfter: { provider: 'tmdb', providerId: tmdbId, tmdbId },
+        userStatusBefore: 'WATCHING',
+        userStatusAfter: 'CAUGHT_UP',
+        episodesInsertedIds: [],
+        episodesUpdatedIds: [],
+        preservedOrphanEpisodeIds: [],
+        watchedMappingCount: 2,
+        verificationPassed: true,
+        verificationDetail: [],
+      },
+    });
+    mockGlobalFetchWithMismatch();
+
+    const items = await service.list(user.id);
+
+    const item = items.find((i) => i.seriesId === seriesId);
+    expect(item).toBeDefined();
+    expect(item?.title).toBe(title);
+  });
 });
