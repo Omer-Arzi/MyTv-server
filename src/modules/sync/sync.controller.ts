@@ -1,5 +1,5 @@
-import { Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SyncTrigger } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types';
@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SeriesRefreshOrchestratorService, SeriesRefreshOutcome, SeriesSyncStatusSnapshot } from './series-refresh-orchestrator.service';
 import { LibraryRefreshJobService } from './library-refresh-job.service';
 import { LibraryRefreshJobDto, LibraryRefreshStatusDto } from './dto/library-refresh-job.dto';
+import { StartLibraryRefreshRequestDto } from './dto/start-library-refresh-request.dto';
 import { SeriesRefreshResultDto, SeriesSyncStatusDto } from './dto/series-sync-status.dto';
 
 function toSyncStatusDto(snapshot: SeriesSyncStatusSnapshot): SeriesSyncStatusDto {
@@ -94,11 +95,13 @@ export class SyncController {
     description:
       'Idempotent/cooldown-protected: if a refresh is already running for this user, returns that existing job instead of starting a duplicate. ' +
       'Prioritizes WATCHING/CAUGHT_UP and series with an overdue or soon-due known episode. Uses the same per-series pipeline as the scheduler — never a separate, unsafe write path. ' +
-      'Also runs local release activation (no provider calls) across the whole library once the per-series pass completes. Runs in the background — poll GET /sync/library/status for progress.',
+      'Also runs local release activation (no provider calls) across the whole library once the per-series pass completes. Runs in the background — poll GET /sync/library/status for progress. ' +
+      'Optionally pass statuses to narrow the run to only series at those personal statuses (e.g. just COMPLETED) — the job\'s scope itself is not persisted, so GET /sync/library/status cannot report which statuses a finished run covered.',
   })
+  @ApiBody({ type: StartLibraryRefreshRequestDto, required: false })
   @ApiOkResponse({ type: LibraryRefreshJobDto })
-  async startLibraryRefresh(@CurrentUser() user: RequestUser): Promise<LibraryRefreshJobDto> {
-    const job = await this.libraryRefreshJobService.startLibraryRefresh(user.id, SyncTrigger.MANUAL_LIBRARY);
+  async startLibraryRefresh(@CurrentUser() user: RequestUser, @Body() body?: StartLibraryRefreshRequestDto): Promise<LibraryRefreshJobDto> {
+    const job = await this.libraryRefreshJobService.startLibraryRefresh(user.id, SyncTrigger.MANUAL_LIBRARY, body?.statuses);
     return toLibraryJobDto(job);
   }
 

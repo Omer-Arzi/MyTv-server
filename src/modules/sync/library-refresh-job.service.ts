@@ -36,14 +36,20 @@ export class LibraryRefreshJobService {
     private readonly orchestrator: SeriesRefreshOrchestratorService,
   ) {}
 
-  async startLibraryRefresh(userId: string, triggeredBy: SyncTrigger = SyncTrigger.MANUAL_LIBRARY): Promise<LibraryRefreshJob> {
+  // statuses: when non-empty, narrows the refresh to only series whose
+  // userStatus is in this set (the System tab's "fetch just COMPLETED/
+  // CAUGHT_UP" use case) — undefined/empty means today's default, every
+  // tracked (non-UNKNOWN) status. Not persisted on the job row itself
+  // (v1 decision — see mobile/docs/tab-restructure-todo.md) — the job's
+  // scope is not remembered once the request completes.
+  async startLibraryRefresh(userId: string, triggeredBy: SyncTrigger = SyncTrigger.MANUAL_LIBRARY, statuses?: UserSeriesStatus[]): Promise<LibraryRefreshJob> {
     const existing = await this.prisma.libraryRefreshJob.findFirst({ where: { userId, status: 'RUNNING' }, orderBy: { startedAt: 'desc' } });
     if (existing) {
       this.logger.log(`[sync] library refresh already running for user ${userId} (job ${existing.id}) — returning existing job, not starting a new one`);
       return existing;
     }
 
-    const candidateIds = await this.loadPrioritizedCandidateIds(userId);
+    const candidateIds = await this.loadPrioritizedCandidateIds(userId, statuses);
     const job = await this.prisma.libraryRefreshJob.create({ data: { userId, triggeredBy, totalSeries: candidateIds.length } });
 
     // Fire-and-forget — the caller (controller) returns immediately with
@@ -59,10 +65,10 @@ export class LibraryRefreshJobService {
     return this.prisma.libraryRefreshJob.findFirst({ where: { userId }, orderBy: { startedAt: 'desc' } });
   }
 
-  private async loadPrioritizedCandidateIds(userId: string): Promise<string[]> {
+  private async loadPrioritizedCandidateIds(userId: string, statuses?: UserSeriesStatus[]): Promise<string[]> {
     const now = new Date();
     const progress = await this.prisma.userSeriesProgress.findMany({
-      where: { userId, userStatus: { not: UserSeriesStatus.UNKNOWN } },
+      where: { userId, userStatus: statuses && statuses.length > 0 ? { in: statuses } : { not: UserSeriesStatus.UNKNOWN } },
       include: { series: { include: { externalIds: true, seasons: { include: { episodes: { select: { airDate: true } } } } } } },
     });
 

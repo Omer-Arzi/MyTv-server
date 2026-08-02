@@ -165,6 +165,22 @@ Full request/response schemas, including field-level descriptions and examples, 
 - **Mobile UI usage**: an "undo"/"mark unwatched" action on a watched episode row in the series-detail episode list, using that episode's `episodeWatchId`. Use the response to update the episode's watched state, any "watch next" card, and the series' status badge in place, without a follow-up `GET /series/:id`.
 - **Known limitations**: does not delete the `Episode`/`Season`/`Series` rows or any provider metadata — only the `EpisodeWatch` (and its `EpisodeNote`, if `force`d) is removed.
 
+### `POST /sync/library/refresh`
+
+- **Purpose**: manually kick off a "check for updates" run across the user's whole library (or a status-scoped subset of it) — the mobile System/admin screen's "Fetch" action.
+- **Request params**: no path/query params. **Body** (optional): `{ statuses?: UserSeriesStatus[] }` — when provided and non-empty, narrows the run to only series at one of these personal statuses (e.g. `["COMPLETED", "CAUGHT_UP"]`, combined as an OR, not an AND). Omit the body entirely, or pass an empty array, to refresh every tracked (non-`UNKNOWN`) status — the original whole-library behavior.
+- **Response**: `LibraryRefreshJobDto` — `id`, `status` (`RUNNING`/`COMPLETED`/`PARTIAL`/`FAILED`), `startedAt`, `finishedAt` (nullable), `totalSeries`, `checkedSeries`, `seriesWithNewEpisodes`, `seriesWithNewSeasons`, `seriesFailed`, `seriesManualReview`, `seriesActivatedLocally`, `lastError` (nullable, user-safe message only).
+- **Mobile UI usage**: called fire-and-forget from a "Fetch" button; the returned job's `id`/`status` lets the UI immediately show "starting…", then poll `GET /sync/library/status` at a modest interval (e.g. every few seconds) while `status === 'RUNNING'`, stopping once it reaches a terminal status.
+- **Known limitations**: idempotent/cooldown-protected per user (a second call while one is `RUNNING` returns the existing job rather than starting a duplicate) — but this applies globally per user, not per status scope, so a `COMPLETED`-only run in progress will also block a concurrently-requested `CAUGHT_UP`-only run rather than running them side by side. Which status(es) a job was scoped to is **not persisted** on the job row — once you have the response, there's no way to later ask "what did job X cover," including via `GET /sync/library/status`.
+
+### `GET /sync/library/status`
+
+- **Purpose**: current/most recent full-library refresh job for this user, plus library-wide automatic-sync facts.
+- **Request params**: none.
+- **Response**: `LibraryRefreshStatusDto` — `latestJob` (nullable `LibraryRefreshJobDto`, see above), `automaticUpdatesEnabled` (always `true` today — no user-facing disable switch exists), `lastAutomaticCheckAt` (nullable, most recent `lastEpisodeRefreshAt` across the whole library, any trigger), `lastLocalActivationAt` (nullable, most recent local-release-activation timestamp across the library).
+- **Mobile UI usage**: poll this while `latestJob.status === 'RUNNING'` to drive a progress readout (`checkedSeries`/`totalSeries`, counts of new episodes/seasons/failures found so far); also useful as a one-off read (no polling) to show "last checked" library-wide facts outside of an active run.
+- **Known limitations**: `latestJob` reflects only the single most recent run — no history list of past runs, and (as above) no record of what status scope a finished run covered.
+
 ## Not available yet
 
 - **Search / add a new series from TMDb.** `GET /series` only returns series MyTv already has a relationship with — there's no "search TMDb and start tracking a new show" endpoint. TMDb matching exists as an offline backend pipeline (`tmdb-enrichment/`), not a live API a client can call.
