@@ -7,6 +7,7 @@ import {
   correctProposedStatusForProtection,
   dedupeBySeriesId,
   deriveProposalReasonCode,
+  fromLiveBlockedProposal,
   fromManualReviewCandidate,
   MigrationWorkbenchItem,
 } from '../migration-workbench-logic';
@@ -122,6 +123,68 @@ describe('fromManualReviewCandidate', () => {
     const candidate: PipelineManualReviewCandidate = { title: 'Unmatched Show', seriesId: 's2', reason: 'no confirmed provider match and no decisions-file entry at all.' };
     const result = fromManualReviewCandidate(candidate);
     expect(result).toEqual({ seriesId: 's2', title: 'Unmatched Show', category: 'NO_RELIABLE_PROVIDER', reason: candidate.reason, proposal: null });
+  });
+});
+
+describe('fromLiveBlockedProposal', () => {
+  it('maps an eligible live proposal straight through', () => {
+    const result = fromLiveBlockedProposal({
+      seriesId: 's3',
+      title: 'Batman: Caped Crusader',
+      eligible: true,
+      category: 'READY_AUTOMATIC',
+      reason: 'identity confirmed with high confidence and catalog structure is safe — eligible for automatic migration',
+      proposal: {
+        currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+        proposedUserStatus: UserSeriesStatus.WATCHING,
+        matchedWatchedEpisodeCount: 10,
+        matchedTotalEpisodeCount: 10,
+        episodesToCreate: 10,
+        seasonsToCreate: [2],
+        unmatchedWatchedOrphanCount: 0,
+        confidence: 'HIGH',
+      },
+    });
+    expect(result).toEqual({
+      seriesId: 's3',
+      title: 'Batman: Caped Crusader',
+      category: 'READY_AUTOMATIC',
+      reason: 'identity confirmed with high confidence and catalog structure is safe — eligible for automatic migration',
+      proposal: {
+        currentUserStatus: UserSeriesStatus.CAUGHT_UP,
+        proposedUserStatus: UserSeriesStatus.WATCHING,
+        matchedWatchedEpisodeCount: 10,
+        matchedTotalEpisodeCount: 10,
+        episodesToCreate: 10,
+        seasonsToCreate: [2],
+        unmatchedWatchedOrphanCount: 0,
+        confidence: 'HIGH',
+      },
+    });
+  });
+
+  it('drops an already-fully-migrated proposal (nothing left to show)', () => {
+    const result = fromLiveBlockedProposal({
+      seriesId: 's3',
+      title: 'Some Show',
+      eligible: false,
+      category: 'READY_AUTOMATIC',
+      reason: 'already fully migrated — nothing left to propose.',
+      proposal: null,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('keeps a blocked/ineligible proposal for a genuinely unresolved reason (e.g. season mismatch)', () => {
+    const result = fromLiveBlockedProposal({
+      seriesId: 's4',
+      title: 'Some Anime',
+      eligible: false,
+      category: 'NEEDS_EPISODE_REVIEW',
+      reason: 'season 1 shrank relative to the provider',
+      proposal: null,
+    });
+    expect(result).toEqual({ seriesId: 's4', title: 'Some Anime', category: 'NEEDS_EPISODE_REVIEW', reason: 'season 1 shrank relative to the provider', proposal: null });
   });
 });
 

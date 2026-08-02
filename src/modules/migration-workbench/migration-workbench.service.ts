@@ -1,8 +1,10 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { MigrationHistory, UserSeriesStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DEV_USER_ID } from '../../common/constants';
 import { TmdbClient } from '../../../tmdb-enrichment/tmdb-client';
 import { TvMazeClient } from '../../../secondary-provider-audit/tvmaze-client';
 import { loadSeriesHealthInputs } from '../../../library-health/load-series-health-inputs';
@@ -20,6 +22,7 @@ import {
   correctProposedStatusForProtection,
   dedupeBySeriesId,
   deriveProposalReasonCode,
+  fromLiveBlockedProposal,
   fromManualReviewCandidate,
   MigrationWorkbenchCategory,
   MigrationWorkbenchItem,
@@ -37,6 +40,12 @@ const LIBRARY_HEALTH_DIR = path.join(process.cwd(), 'library-health');
 const BATCH_MANIFEST_PATH = path.join(LIBRARY_HEALTH_DIR, 'output', 'latest-batch-manifest.json');
 const PIPELINE_REPORT_PATH = path.join(LIBRARY_HEALTH_DIR, 'output', 'latest-provider-confirmation-pipeline-report.json');
 const DEFAULT_MAX_SEASON_ZERO_ORPHANS = 1;
+// Same hourly cadence as EpisodeSyncSchedulerService's own tick — a series
+// Pipeline B blocks this hour should, in the common case, be auto-resolved
+// (if safe) or at least classified for Needs Attention (if not) well
+// within the same day, not up to 24h later. Configurable for the same
+// reason episode-sync-scheduler.service.ts's own interval is.
+const DEFAULT_SWEEP_TICK_INTERVAL_MS = 60 * 60 * 1000;
 
 function readJsonIfExists<T>(filePath: string): T | null {
   try {
@@ -48,21 +57,32 @@ function readJsonIfExists<T>(filePath: string): T | null {
 
 @Injectable()
 export class MigrationWorkbenchService {
+  private readonly logger = new Logger(MigrationWorkbenchService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
-  // The list view — a read-only projection of the library-health CLI
+  // The list view — mostly a read-only projection of the library-health CLI
   // pipeline's own periodically-regenerated reports (batch manifest +
   // pipeline report), never a live TMDb/TVmaze call for the bulk of items.
   // Same architectural choice this app already made for the DB-only Needs
   // Attention v1: a screen loaded on every app open must stay fast and
   // never burn API rate limit — a specific series' live, up-to-the-second
   // proposal is what getProposal() is for, triggered by an explicit user
-  // tap. Because of this, the list can be up to as stale as the last CLI
-  // pipeline run — documented on the controller's @ApiOperation, not
-  // hidden. invalidateStaleItems() below corrects the specific, common
+  // tap. Because of this, the cached portion can be up to as stale as the
+  // last CLI pipeline run — documented on the controller's @ApiOperation,
+  // not hidden. invalidateStaleItems() below corrects the specific, common
   // ways that staleness is user-visibly WRONG (not just old) using cheap
   // DB-only checks, with a tightly bounded live recompute only for the
   // rarer case that genuinely needs one.
+  //
+  // ALSO merges in series the automatic scheduler has flagged live
+  // (SeriesSyncStatus.lastRequiresManualReview) — a real gap found via a
+  // real incident (a genuinely new, safe season sitting blocked with no
+  // way for the user to ever find out short of asking): the cached report
+  // above only ever covers Pipeline A's initial catalog-migration pass, it
+  // has no way to know about a block Pipeline B's ongoing refresh produced
+  // after that report was last generated. loadLiveBlockedItems reads that
+  // signal directly, bounded the same way invalidateStaleItems already is.
   async list(userId: string): Promise<MigrationWorkbenchItemDto[]> {
     const manifest = readJsonIfExists<BatchManifest>(BATCH_MANIFEST_PATH);
     const report = readJsonIfExists<ProviderConfirmationPipelineReport>(PIPELINE_REPORT_PATH);
@@ -79,21 +99,29 @@ export class MigrationWorkbenchService {
       for (const candidate of report.nextManualReviewCandidates) items.push(fromManualReviewCandidate(candidate));
     }
 
+    const liveBlockedItems = await this.loadLiveBlockedItems(
+      userId,
+      new Set(items.map((i) => i.seriesId)),
+    );
+    items.push(...liveBlockedItems);
+
     if (items.length === 0) return [];
 
+    const dedupedItems = dedupeBySeriesId(items);
+
     const seriesRows = await this.prisma.series.findMany({
-      where: { id: { in: items.map((i) => i.seriesId) } },
+      where: { id: { in: dedupedItems.map((i) => i.seriesId) } },
       select: { id: true, title: true, posterUrl: true },
     });
     const posterBySeriesId = new Map(seriesRows.map((s) => [s.id, s.posterUrl]));
-    // Only series still present in THIS user's library, matching this
-    // report's targetUserId — a stale report referencing a since-deleted
-    // series is silently dropped rather than surfaced as a broken item.
+    // Only series still present in THIS user's library — a stale report
+    // referencing a since-deleted series is silently dropped rather than
+    // surfaced as a broken item.
     const knownSeriesIds = new Set(seriesRows.map((s) => s.id));
 
     const liveItems = await this.invalidateStaleItems(
       userId,
-      dedupeBySeriesId(items.filter((i) => knownSeriesIds.has(i.seriesId))),
+      dedupedItems.filter((i) => knownSeriesIds.has(i.seriesId)),
     );
 
     return liveItems
@@ -176,6 +204,124 @@ export class MigrationWorkbenchService {
     }
 
     return result;
+  }
+
+  // Same bound as MAX_LIVE_RECOMPUTE_PER_LIST, tracked separately since
+  // it's a different queried set (SeriesSyncStatus.lastRequiresManualReview
+  // hits, not stale-cache corrections) — in practice this is the count of
+  // series the scheduler has blocked since the last sweepBlockedSeries()
+  // tick (at most hourly, see DEFAULT_SWEEP_TICK_INTERVAL_MS), which is
+  // always a handful, never hundreds.
+  private static readonly MAX_LIVE_BLOCKED_PER_LIST = 10;
+
+  // Loads series the automatic scheduler has flagged live
+  // (SeriesSyncStatus.lastRequiresManualReview) that aren't already covered
+  // by the cached CLI-report items above (excludeSeriesIds) — see list()'s
+  // own doc comment for why this exists. Each hit gets one live
+  // getProposal() call (the exact same canonical classification every
+  // other path in this file uses, never a parallel one), bounded the same
+  // way invalidateStaleItems bounds its own live recomputes. A
+  // classification failure for one series (missing token, transient
+  // network error) is logged and skipped, never fails the whole list.
+  private async loadLiveBlockedItems(userId: string, excludeSeriesIds: Set<string>): Promise<MigrationWorkbenchItem[]> {
+    const blocked = await this.prisma.seriesSyncStatus.findMany({
+      where: { lastRequiresManualReview: true, series: { progress: { some: { userId } } } },
+      select: { seriesId: true },
+    });
+
+    const result: MigrationWorkbenchItem[] = [];
+    let budget = MigrationWorkbenchService.MAX_LIVE_BLOCKED_PER_LIST;
+
+    for (const { seriesId } of blocked) {
+      if (excludeSeriesIds.has(seriesId)) continue;
+      if (budget <= 0) break;
+      budget--;
+
+      try {
+        const proposal = await this.getProposal(userId, seriesId);
+        const item = fromLiveBlockedProposal(proposal);
+        if (item) result.push(item);
+      } catch (err) {
+        this.logger.warn(`[migration-workbench] live-blocked classification failed for series ${seriesId}: ${(err as Error).message}`);
+      }
+    }
+
+    return result;
+  }
+
+  // The other half of the fix (see list()'s doc comment): for every series
+  // the scheduler has flagged live, ask the exact same question a human
+  // opening Needs Attention and tapping "Confirm Migration" would get
+  // answered — and if it comes back READY_AUTOMATIC (fully deterministic,
+  // no orphans, nothing for a human to weigh in on), just apply it right
+  // here, the same confirmMigration() a human tap would trigger. Anything
+  // else is left flagged for loadLiveBlockedItems/list() to surface — this
+  // never decides FOR a human, only ever skips asking one when there is
+  // structurally nothing to ask.
+  //
+  // Runs on the same hourly cadence as EpisodeSyncSchedulerService's own
+  // tick (DEFAULT_SWEEP_TICK_INTERVAL_MS) — see that file for why an
+  // interval this fine-grained is cheap and correct to repeat often. Never
+  // throws out of the tick itself; one series' failure is logged and never
+  // blocks another's.
+  @Interval(Number(process.env.MIGRATION_SWEEP_TICK_INTERVAL_MS) || DEFAULT_SWEEP_TICK_INTERVAL_MS)
+  async handleSweepTick(): Promise<void> {
+    if (!process.env.TMDB_ACCESS_TOKEN) return; // same guard EpisodeSyncSchedulerService's tick uses — nothing to do without it.
+    const summary = await this.sweepBlockedSeries(DEV_USER_ID);
+    if (summary.checked > 0) {
+      this.logger.log(
+        `[migration-workbench] sweep — checked=${summary.checked}, autoApplied=${summary.autoApplied}, alreadyResolved=${summary.alreadyResolved}, stillNeedsReview=${summary.stillNeedsReview}, errored=${summary.errored}`,
+      );
+    }
+  }
+
+  // Exposed separately from the @Interval handler so tests/an eventual
+  // manual-trigger endpoint can invoke exactly this logic without waiting
+  // for the interval — same "one implementation, multiple entry points"
+  // posture as EpisodeSyncSchedulerService.runTick.
+  async sweepBlockedSeries(userId: string): Promise<{ checked: number; autoApplied: number; alreadyResolved: number; stillNeedsReview: number; errored: number }> {
+    const blocked = await this.prisma.seriesSyncStatus.findMany({
+      where: { lastRequiresManualReview: true, series: { progress: { some: { userId } } } },
+      select: { seriesId: true },
+    });
+
+    const summary = { checked: blocked.length, autoApplied: 0, alreadyResolved: 0, stillNeedsReview: 0, errored: 0 };
+
+    // Sequential, not parallel — matches every other pipeline loop in this
+    // codebase (run-apply-refresh.ts, episode-sync-scheduler.service.ts):
+    // predictable TMDb request volume, one series' failure can never race
+    // another's write.
+    for (const { seriesId } of blocked) {
+      try {
+        const proposal = await this.getProposal(userId, seriesId);
+
+        if (proposal.eligible && proposal.category === 'READY_AUTOMATIC') {
+          await this.confirmMigration(userId, seriesId);
+          // Cleared explicitly rather than waiting for the next episode-sync
+          // tick to naturally recompute it (which would also work, since the
+          // season/episodes just written mean that tick's own comparison no
+          // longer sees a suspicious gap) — this closes the loop within this
+          // same sweep instead of leaving a stale "still needs review" flag
+          // visible for up to another hour.
+          await this.prisma.seriesSyncStatus.update({ where: { seriesId }, data: { lastRequiresManualReview: false } });
+          summary.autoApplied++;
+        } else if (!proposal.eligible && proposal.reason.startsWith('already fully migrated')) {
+          // Genuinely real case, not hypothetical: a series can already be
+          // fully migrated (e.g. resolved manually, or by an earlier sweep
+          // tick) while its SeriesSyncStatus flag is still stale — nothing
+          // to apply, just clear the flag so it stops showing as blocked.
+          await this.prisma.seriesSyncStatus.update({ where: { seriesId }, data: { lastRequiresManualReview: false } });
+          summary.alreadyResolved++;
+        } else {
+          summary.stillNeedsReview++;
+        }
+      } catch (err) {
+        summary.errored++;
+        this.logger.error(`[migration-workbench] sweep failed for series ${seriesId}`, err as Error);
+      }
+    }
+
+    return summary;
   }
 
   // "Find Provider" — a live TMDb search + score for one unresolved series,
