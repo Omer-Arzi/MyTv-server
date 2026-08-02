@@ -116,29 +116,6 @@ export function fromManualReviewCandidate(candidate: PipelineManualReviewCandida
   return { seriesId: candidate.seriesId, title: candidate.title, category: 'NO_RELIABLE_PROVIDER', reason: candidate.reason, proposal: null };
 }
 
-// Maps a live GET :seriesId/proposal result into the same MigrationWorkbenchItem
-// shape the cached-report items above use — for series the AUTOMATIC
-// SCHEDULER has flagged as blocked (SeriesSyncStatus.lastRequiresManualReview),
-// which the static CLI-report-sourced items can never include on their own
-// (that report only ever covers Pipeline A's initial catalog-migration
-// pass, not Pipeline B's ongoing per-series refresh blocks — see
-// mobile/docs/tab-restructure-todo.md's "how do I avoid this" follow-up,
-// the incident that motivated this function). Returns null for a proposal
-// with nothing actionable to show (e.g. it resolved to "already fully
-// migrated" by the time this ran) — dropped entirely, same convention
-// invalidateStaleItems already follows for a resolved item.
-export function fromLiveBlockedProposal(proposal: {
-  seriesId: string;
-  title: string;
-  eligible: boolean;
-  category: MigrationWorkbenchCategory;
-  reason: string;
-  proposal: MigrationWorkbenchProposalSummary | null;
-}): MigrationWorkbenchItem | null {
-  if (!proposal.eligible && proposal.reason.startsWith('already fully migrated')) return null;
-  return { seriesId: proposal.seriesId, title: proposal.title, category: proposal.category, reason: proposal.reason, proposal: proposal.proposal };
-}
-
 // Lower number = more specific/actionable, wins when the same series
 // appears more than once in a cache-derived item list.
 const CATEGORY_SPECIFICITY: Record<MigrationWorkbenchCategory, number> = {

@@ -22,7 +22,6 @@ import {
   correctProposedStatusForProtection,
   dedupeBySeriesId,
   deriveProposalReasonCode,
-  fromLiveBlockedProposal,
   fromManualReviewCandidate,
   MigrationWorkbenchCategory,
   MigrationWorkbenchItem,
@@ -206,44 +205,48 @@ export class MigrationWorkbenchService {
     return result;
   }
 
-  // Same bound as MAX_LIVE_RECOMPUTE_PER_LIST, tracked separately since
-  // it's a different queried set (SeriesSyncStatus.lastRequiresManualReview
-  // hits, not stale-cache corrections) — in practice this is the count of
-  // series the scheduler has blocked since the last sweepBlockedSeries()
-  // tick (at most hourly, see DEFAULT_SWEEP_TICK_INTERVAL_MS), which is
-  // always a handful, never hundreds.
-  private static readonly MAX_LIVE_BLOCKED_PER_LIST = 10;
-
   // Loads series the automatic scheduler has flagged live
   // (SeriesSyncStatus.lastRequiresManualReview) that aren't already covered
   // by the cached CLI-report items above (excludeSeriesIds) — see list()'s
-  // own doc comment for why this exists. Each hit gets one live
-  // getProposal() call (the exact same canonical classification every
-  // other path in this file uses, never a parallel one), bounded the same
-  // way invalidateStaleItems bounds its own live recomputes. A
-  // classification failure for one series (missing token, transient
-  // network error) is logged and skipped, never fails the whole list.
+  // own doc comment for why this exists.
+  //
+  // Deliberately DB-only, no live getProposal()/TMDb call per item — a
+  // first version called getProposal() live for every hit here (bounded to
+  // 10), and a real production run of exactly that showed why it was
+  // wrong: 10 sequential live TMDb classifications inside one GET request
+  // that fires on every app load took ~4.5s and silently dropped every
+  // single item (almost certainly TMDb's per-IP, not per-key, rate limit —
+  // see docs/tmdb-enrichment-plan.md — tripped by the burst). This list
+  // must stay exactly as fast and rate-limit-free as the cached-report path
+  // above already is; deep, accurate classification (READY_AUTOMATIC vs.
+  // NEEDS_EPISODE_REVIEW, etc.) already exists as its own live call and
+  // belongs in exactly two places: the hourly sweepBlockedSeries() tick
+  // (which runs a real getProposal() per series, but in the background, not
+  // on a page load), and the explicit per-series tap-through
+  // (GET :seriesId/proposal, one live call for one series a human just
+  // asked about). By the time a user actually sees an item here, the sweep
+  // has almost always already had a chance to auto-resolve anything
+  // READY_AUTOMATIC — what's left is disproportionately likely to
+  // genuinely need a human anyway, so a generic NEEDS_EPISODE_REVIEW-shaped
+  // entry pointing at the series page is an honest, not misleading,
+  // default; tapping into the real proposal screen still gets the precise,
+  // live classification for that one series.
   private async loadLiveBlockedItems(userId: string, excludeSeriesIds: Set<string>): Promise<MigrationWorkbenchItem[]> {
     const blocked = await this.prisma.seriesSyncStatus.findMany({
       where: { lastRequiresManualReview: true, series: { progress: { some: { userId } } } },
-      select: { seriesId: true },
+      select: { seriesId: true, series: { select: { title: true } } },
     });
 
     const result: MigrationWorkbenchItem[] = [];
-    let budget = MigrationWorkbenchService.MAX_LIVE_BLOCKED_PER_LIST;
-
-    for (const { seriesId } of blocked) {
+    for (const { seriesId, series } of blocked) {
       if (excludeSeriesIds.has(seriesId)) continue;
-      if (budget <= 0) break;
-      budget--;
-
-      try {
-        const proposal = await this.getProposal(userId, seriesId);
-        const item = fromLiveBlockedProposal(proposal);
-        if (item) result.push(item);
-      } catch (err) {
-        this.logger.warn(`[migration-workbench] live-blocked classification failed for series ${seriesId}: ${(err as Error).message}`);
-      }
+      result.push({
+        seriesId,
+        title: series.title,
+        category: 'NEEDS_EPISODE_REVIEW',
+        reason: 'An automatic catalog refresh found a change here that needs a quick look — open the series to review it.',
+        proposal: null,
+      });
     }
 
     return result;
