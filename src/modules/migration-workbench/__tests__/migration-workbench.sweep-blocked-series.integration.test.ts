@@ -170,9 +170,10 @@ describeIfDbConfigured('MigrationWorkbenchService.sweepBlockedSeries / list() li
     const { seriesId, title } = await createBlockedFixtureSeries(user.id, tmdbId);
     mockGlobalFetchWithSafeNewSeason(title);
     await service.confirmMigration(user.id, seriesId);
-    // confirmMigration doesn't touch SeriesSyncStatus at all (that's
-    // Pipeline B's own bookkeeping) — re-flag it exactly as stale as the
-    // real Batman case was found: migrated for real, flag never cleared.
+    // confirmMigration() now clears the flag itself (see the dedicated test
+    // below), but this test is about a flag that goes stale for some OTHER
+    // reason after that — e.g. a scheduler tick re-flagging it before this
+    // read — so re-flag it by hand to reproduce that shape directly.
     await prisma.seriesSyncStatus.update({ where: { seriesId }, data: { lastRequiresManualReview: true } });
 
     const summary = await service.sweepBlockedSeries(user.id);
@@ -211,6 +212,29 @@ describeIfDbConfigured('MigrationWorkbenchService.sweepBlockedSeries / list() li
     const item = items.find((i) => i.seriesId === seriesId);
     expect(item).toBeDefined();
     expect(item?.title).toBe(title);
+  });
+
+  // Regression test for a real bug reported after confirmMigration() itself
+  // was checked live: a human tapping "Confirm" in the app on a live-blocked
+  // Needs Attention item (the normal UI path — NOT the hourly sweep) never
+  // saw it disappear afterward. Root cause was the mirror image of the
+  // 'alreadyResolved' bug above — sweepBlockedSeries() clears
+  // lastRequiresManualReview after its own confirmMigration() call, but
+  // confirmMigration() never cleared it itself, so any OTHER caller (chiefly
+  // the controller's POST :seriesId/confirm route) left the flag stale and
+  // loadLiveBlockedItems() kept resurfacing it forever.
+  it('list() does not surface a blocked series once a direct (non-sweep) confirmMigration call has resolved it', async () => {
+    const user = await createFixtureUser();
+    const tmdbId = `9${randomUUID().replace(/-/g, '').slice(0, 6)}`;
+    const { seriesId, title } = await createBlockedFixtureSeries(user.id, tmdbId);
+    mockGlobalFetchWithSafeNewSeason(title);
+
+    await service.confirmMigration(user.id, seriesId);
+    const syncStatus = await prisma.seriesSyncStatus.findUniqueOrThrow({ where: { seriesId } });
+    expect(syncStatus.lastRequiresManualReview).toBe(false);
+
+    const items = await service.list(user.id);
+    expect(items.find((i) => i.seriesId === seriesId)).toBeUndefined();
   });
 
   it('list() does not surface a blocked series once it has been auto-resolved by the sweep', async () => {

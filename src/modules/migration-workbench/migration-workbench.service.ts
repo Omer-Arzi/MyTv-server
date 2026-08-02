@@ -548,6 +548,16 @@ export class MigrationWorkbenchService {
       maxSeasonZeroOrphans: DEFAULT_MAX_SEASON_ZERO_ORPHANS,
     });
 
+    if (outcome.kind === 'applied' || outcome.kind === 'already-applied') {
+      // Same cleanup sweepBlockedSeries() does after its own confirmMigration()
+      // call — without it, a series a human confirms directly here (rather
+      // than via the sweep) keeps its stale live-blocked flag and never
+      // leaves the Needs Attention list. updateMany (not update): this
+      // series may have no SeriesSyncStatus row at all if it was never
+      // touched by the episode-refresh scheduler.
+      await this.prisma.seriesSyncStatus.updateMany({ where: { seriesId }, data: { lastRequiresManualReview: false } });
+    }
+
     if (outcome.kind === 'applied') {
       return {
         seriesId,
