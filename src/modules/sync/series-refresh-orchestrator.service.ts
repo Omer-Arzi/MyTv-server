@@ -168,6 +168,7 @@ export class SeriesRefreshOrchestratorService {
           imageUrl: ep.imageUrl,
           runtimeMinutes: ep.runtimeMinutes,
           watched: ep.watches.length > 0,
+          tmdbEpisodeId: ep.tmdbEpisodeId,
         })),
       ),
     };

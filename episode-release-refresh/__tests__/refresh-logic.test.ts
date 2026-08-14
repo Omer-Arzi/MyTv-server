@@ -269,6 +269,92 @@ describe('compareSeriesCatalog', () => {
     expect(result.warnings.some((w) => w.includes('watched episode S1E1'))).toBe(true);
   });
 
+  // Phase 2 of the episode-identity architecture work
+  // (docs/episode-numbering-and-season-shift-risk.md): a provider episode
+  // whose tmdbEpisodeId already matches a local row must never be proposed
+  // as a new insert, even under a different season/episode number — this
+  // is what stops the Re:Zero-shaped duplication (a reviewed legacy season
+  // and an actively-synced season both containing the same real episode)
+  // from recurring for any series going forward.
+  describe('identity-first matching (tmdbEpisodeId)', () => {
+    it('does not propose a provider episode as new when its tmdbEpisodeId already exists locally under a different season/episode number', () => {
+      // Exactly Re:Zero's shape: a reviewed legacy season (2) whose
+      // episode 1 is the SAME real broadcast as the actively-synced
+      // season 1's episode 67, now carrying the matching tmdbEpisodeId.
+      const localEpisodes = [
+        local({ seasonNumber: 1, episodeNumber: 67, watched: true, tmdbEpisodeId: 7130060 }),
+        local({ seasonNumber: 2, episodeNumber: 1, watched: true }), // legacy row, no tmdbEpisodeId yet (pre-backfill)
+      ];
+      const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 67, tmdbEpisodeId: 7130060 })];
+
+      const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, seasonShrinkReviewed: true });
+
+      expect(result.newEpisodes).toEqual([]);
+      expect(result.classification).toBe('NO_CHANGE');
+    });
+
+    it('still proposes a genuinely new provider episode as new when its tmdbEpisodeId has no local match', () => {
+      const localEpisodes = [local({ seasonNumber: 1, episodeNumber: 77, watched: true, tmdbEpisodeId: 7130083 })];
+      const providerEpisodes = [
+        provider({ seasonNumber: 1, episodeNumber: 77, tmdbEpisodeId: 7130083 }),
+        provider({ seasonNumber: 1, episodeNumber: 78, airDate: PAST, tmdbEpisodeId: 7130155 }),
+      ];
+
+      const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes });
+
+      expect(result.classification).toBe('NEW_RELEASE_AVAILABLE');
+      expect(result.newEpisodes).toHaveLength(1);
+      expect(result.newEpisodes[0]).toMatchObject({ seasonNumber: 1, episodeNumber: 78 });
+    });
+
+    it('warns with the existing local label when skipping an identity-matched duplicate', () => {
+      const localEpisodes = [local({ seasonNumber: 1, episodeNumber: 67, watched: true, tmdbEpisodeId: 7130060 })];
+      // Provider's own season-1 counterpart is included so this test only
+      // exercises identity-matching, not the unrelated season-shift guard
+      // (which would otherwise fire since season 1 would look entirely
+      // absent from the provider response).
+      const providerEpisodes = [
+        provider({ seasonNumber: 1, episodeNumber: 67, tmdbEpisodeId: 7130060 }),
+        provider({ seasonNumber: 4, episodeNumber: 1, tmdbEpisodeId: 7130060 }),
+      ];
+
+      const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes });
+
+      expect(result.warnings.some((w) => w.includes('S4E1') && w.includes('S1E67') && w.includes('7130060'))).toBe(true);
+    });
+
+    it('does not propose an identity-matched episode as the hypothetical next episode a second time', () => {
+      // The local row (S1E67, watched) already occupies its own slot in the
+      // merged catalog — the provider's differently-numbered view of the
+      // same episode (S4E1) must not also be merged in as a second,
+      // phantom unwatched slot that could wrongly become "next".
+      const localEpisodes = [
+        local({ seasonNumber: 1, episodeNumber: 67, watched: true, tmdbEpisodeId: 7130060 }),
+        local({ seasonNumber: 1, episodeNumber: 68, watched: false, airDate: PAST }),
+      ];
+      const providerEpisodes = [
+        provider({ seasonNumber: 1, episodeNumber: 67, tmdbEpisodeId: 7130060 }),
+        provider({ seasonNumber: 1, episodeNumber: 68, airDate: PAST }),
+        provider({ seasonNumber: 4, episodeNumber: 1, tmdbEpisodeId: 7130060, airDate: PAST }),
+      ];
+
+      const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes, currentNextEpisodeId: null });
+
+      expect(result.proposedNextEpisodeLabel).toBe('S1E68');
+      expect(result.proposedNextEpisodeId).toBe('local-1-68');
+    });
+
+    it('falls back to season/episode-key matching when tmdbEpisodeId is absent on both sides (pre-backfill behavior unchanged)', () => {
+      const localEpisodes = [local({ seasonNumber: 1, episodeNumber: 1, watched: true })];
+      const providerEpisodes = [provider({ seasonNumber: 1, episodeNumber: 1 }), provider({ seasonNumber: 1, episodeNumber: 2, airDate: PAST })];
+
+      const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes });
+
+      expect(result.classification).toBe('NEW_RELEASE_AVAILABLE');
+      expect(result.newEpisodes).toHaveLength(1);
+    });
+  });
+
   it('RISKY_DO_NOT_APPLY takes priority over NEEDS_MANUAL_REVIEW when both signals are present', () => {
     const localEpisodes = [
       local({ seasonNumber: 1, episodeNumber: 1, watched: true }),

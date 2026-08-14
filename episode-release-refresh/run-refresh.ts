@@ -78,7 +78,7 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
           seasons: {
             select: {
               seasonNumber: true,
-              episodes: { select: { id: true, episodeNumber: true, title: true, overview: true, airDate: true, imageUrl: true, runtimeMinutes: true } },
+              episodes: { select: { id: true, episodeNumber: true, title: true, overview: true, airDate: true, imageUrl: true, runtimeMinutes: true, tmdbEpisodeId: true } },
             },
           },
         },
@@ -118,6 +118,7 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
         imageUrl: ep.imageUrl,
         runtimeMinutes: ep.runtimeMinutes,
         watched: watchedEpisodeIds.has(ep.id),
+        tmdbEpisodeId: ep.tmdbEpisodeId,
       })),
     ),
   }));
@@ -152,6 +153,7 @@ async function fetchProviderEpisodes(tmdb: TmdbClient, tmdbId: string, localSeas
           airDate: ep.air_date ? new Date(ep.air_date) : null,
           imageUrl: tmdbStillUrl(ep.still_path),
           runtimeMinutes: ep.runtime ?? null,
+          tmdbEpisodeId: ep.id,
         });
       }
     }

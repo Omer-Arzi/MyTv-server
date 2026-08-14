@@ -15,6 +15,7 @@ export interface EpisodeInsertCandidate {
   airDate: Date | null;
   imageUrl: string | null;
   runtimeMinutes: number | null;
+  tmdbEpisodeId?: number;
 }
 
 export interface EpisodeInsertPlan {
@@ -65,6 +66,7 @@ export function buildEpisodeInsertCandidates(input: Omit<BuildEpisodeInsertPlanI
         airDate: ep.airDate,
         imageUrl: full?.imageUrl ?? null,
         runtimeMinutes: full?.runtimeMinutes ?? null,
+        tmdbEpisodeId: full?.tmdbEpisodeId,
       };
     });
 

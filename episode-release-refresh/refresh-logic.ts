@@ -199,6 +199,9 @@ export interface LocalEpisodeInput {
   imageUrl: string | null;
   runtimeMinutes: number | null;
   watched: boolean;
+  // See ProviderEpisodeInput.tmdbEpisodeId — null until a series' episodes
+  // have gone through the backfill (or were inserted after Phase 1 shipped).
+  tmdbEpisodeId?: number | null;
 }
 
 export interface ProviderEpisodeInput {
@@ -209,6 +212,11 @@ export interface ProviderEpisodeInput {
   airDate: Date | null;
   imageUrl: string | null;
   runtimeMinutes: number | null;
+  // TMDb's stable per-episode id (TmdbEpisode.id) — optional since not
+  // every ProviderEpisodeInput producer is TMDb-sourced (TVmaze candidates
+  // in library-health have no equivalent and leave this undefined). See
+  // Episode.tmdbEpisodeId's schema comment for why this exists.
+  tmdbEpisodeId?: number;
 }
 
 export interface CompareSeriesCatalogInput {
@@ -324,9 +332,22 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
 
   const localByKey = new Map<string, LocalEpisodeInput>();
   const localCountBySeason = new Map<number, number>();
+  // Identity-first lookup (Phase 2 of the episode-numbering architecture
+  // work, docs/episode-numbering-and-season-shift-risk.md): a provider
+  // episode whose tmdbEpisodeId already matches an existing local row —
+  // REGARDLESS of season/episode key — is the same real broadcast episode,
+  // even if it's currently filed locally under a different season/episode
+  // number (e.g. a legacy per-arc import alongside an actively-synced
+  // absolute-numbered season, the exact Re:Zero shape this exists to catch).
+  // Only populated from rows that already have a tmdbEpisodeId — before the
+  // backfill (Phase 3) runs, this map is empty and every provider episode
+  // falls through to the pre-existing key-based matching below, so this
+  // change is a no-op for any series that hasn't been backfilled yet.
+  const localByTmdbId = new Map<number, LocalEpisodeInput>();
   for (const ep of input.localEpisodes) {
     localByKey.set(episodeKey(ep.seasonNumber, ep.episodeNumber), ep);
     localCountBySeason.set(ep.seasonNumber, (localCountBySeason.get(ep.seasonNumber) ?? 0) + 1);
+    if (ep.tmdbEpisodeId != null) localByTmdbId.set(ep.tmdbEpisodeId, ep);
   }
 
   const providerByKey = new Map<string, ProviderEpisodeInput>();
@@ -384,6 +405,21 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
   const newEpisodes: NewEpisodeFound[] = [];
   for (const [key, providerEp] of providerByKey) {
     if (localByKey.has(key)) continue;
+    // Identity-first check: never propose inserting a provider episode that
+    // already exists locally under a different season/episode number — that
+    // would recreate the exact cross-representation duplication this check
+    // exists to prevent. Reported for visibility, not silently dropped.
+    // Deliberately does NOT rewrite the existing row's display numbering
+    // (safeguard: identity match alone never authorizes a numbering
+    // change) — resolving which label is "correct" is the boundary-mapping
+    // review's job (Phase 4), not this comparison's.
+    if (providerEp.tmdbEpisodeId != null && localByTmdbId.has(providerEp.tmdbEpisodeId)) {
+      const existing = localByTmdbId.get(providerEp.tmdbEpisodeId)!;
+      warnings.push(
+        `provider episode ${episodeLabel(providerEp.seasonNumber, providerEp.episodeNumber)} (tmdbEpisodeId ${providerEp.tmdbEpisodeId}) already exists locally as ${episodeLabel(existing.seasonNumber, existing.episodeNumber)} (id ${existing.id}) — not proposed as a new insert`,
+      );
+      continue;
+    }
     newEpisodes.push({
       seasonNumber: providerEp.seasonNumber,
       episodeNumber: providerEp.episodeNumber,
@@ -432,6 +468,11 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
   }
   for (const [key, ep] of providerByKey) {
     if (merged.has(key)) continue;
+    // Same identity-first exclusion as the newEpisodes diff above — a
+    // provider episode already represented locally (under its own
+    // season/episode key, already in `merged` from the localByKey loop)
+    // must not ALSO be added here as a second, phantom "new" slot.
+    if (ep.tmdbEpisodeId != null && localByTmdbId.has(ep.tmdbEpisodeId)) continue;
     merged.set(key, { seasonNumber: ep.seasonNumber, episodeNumber: ep.episodeNumber, airDate: ep.airDate, watched: false, localId: null });
   }
   const orderedMerged = [...merged.values()].sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber);

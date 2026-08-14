@@ -65,6 +65,7 @@ model User {
   migrationHistory  MigrationHistory[]
   providerDecisions ProviderIdentityDecision[]
   libraryRefreshJobs LibraryRefreshJob[]
+  dismissedPossibleMatches DismissedPossibleMatch[]
 }
 
 model Series {
@@ -93,6 +94,7 @@ model Series {
   migrationHistory  MigrationHistory[]
   providerDecisions ProviderIdentityDecision[]
   syncStatus        SeriesSyncStatus?
+  dismissedPossibleMatches DismissedPossibleMatch[]
 }
 
 // Persistent catalog-sync metadata for the automatic episode-release-refresh
@@ -255,6 +257,22 @@ model Episode {
   id             String    @id @default(uuid())
   seasonId       String
   episodeNumber  Int
+  // TMDb's own stable per-episode id (globally unique across the whole
+  // provider, not just within one show) — durable identity independent of
+  // season/episode display numbering. Nullable — most existing rows were
+  // backfilled via episode-release-refresh/run-backfill-tmdb-episode-ids.ts
+  // (docs/episode-numbering-and-season-shift-risk.md), but any row the
+  // backfill couldn't unambiguously match (see that script's own matching
+  // rules — never a guess) stays null indefinitely rather than being
+  // forced. @unique was only added once the backfill's real output was
+  // inspected and confirmed collision-free (zero duplicate tmdbEpisodeId
+  // values across the whole table) — see the backfill script's dry-run
+  // report before ever assuming this holds for a fresh environment.
+  // season/episodeNumber remain the DISPLAY projection only; this field is
+  // what compareSeriesCatalog matches a freshly-fetched provider episode
+  // against first, before falling back to the (seasonNumber, episodeNumber)
+  // key — see refresh-logic.ts.
+  tmdbEpisodeId  Int?      @unique
   // Nullable: TV Time's export carries no episode titles/overviews/air dates
   // at all (docs/tvtime-data-audit.md §5) — imported episodes stay null here
   // rather than getting an invented placeholder, until Trakt backfills them.
@@ -542,6 +560,35 @@ model ProviderIdentityDecision {
 
   @@unique([userId, seriesId])
   @@index([userId, decision])
+}
+
+// Records that this user explicitly said a search result is NOT the same
+// show as a given local series — the persisted form of the Search tab's
+// "This is a different show" action (PossibleMatchComparisonScreen).
+// Before this table existed, that action only flipped in-memory React
+// state on the search screen (see mobile's SearchScreen.tsx
+// treatedAsDifferent comment) — real, reported confusion: the exact same
+// POSSIBLE-match prompt reappeared on every fresh search or app restart,
+// because nothing server-side ever remembered the choice.
+// search.service.ts checks this before ever classifying a candidate as
+// POSSIBLE; a dismissed (seriesId, provider, providerId) pair is
+// downgraded to a plain NONE result (a genuinely new/unrelated series to
+// add), never re-prompted. One row per (user, local series, external
+// candidate identity) — the same candidate could independently look like a
+// possible match for a DIFFERENT local series too, so this is scoped to
+// the exact pair dismissed, not just the candidate.
+model DismissedPossibleMatch {
+  id          String   @id @default(uuid())
+  userId      String
+  seriesId    String
+  provider    String
+  providerId  String
+  dismissedAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seriesId, provider, providerId])
 }
 
 // A durable, auditable record of exactly one Migration Workbench apply —

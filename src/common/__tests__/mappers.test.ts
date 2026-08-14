@@ -55,6 +55,7 @@ describe('toEpisodeSummary', () => {
       imageUrl: 'https://image.tmdb.org/t/p/original/still.jpg',
       rawMetadata: null,
       importBatchId: null,
+      tmdbEpisodeId: null,
       season,
     });
 
@@ -74,6 +75,7 @@ describe('toEpisodeSummary', () => {
       imageUrl: null,
       rawMetadata: null,
       importBatchId: null,
+      tmdbEpisodeId: null,
       season,
     });
 

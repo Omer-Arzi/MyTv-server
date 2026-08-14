@@ -85,6 +85,7 @@ export async function createMissingSeasonsAndEpisodes(
     imageUrl: ep.imageUrl,
     runtimeMinutes: ep.runtimeMinutes,
     importBatchId: input.importBatchId,
+    tmdbEpisodeId: ep.tmdbEpisodeId ?? null,
   }));
 
   // skipDuplicates turns a (seasonId, episodeNumber) collision into a

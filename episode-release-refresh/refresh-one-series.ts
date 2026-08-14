@@ -98,6 +98,7 @@ async function fetchProviderEpisodes(tmdb: ProviderRefreshClient, tmdbId: string
           airDate: ep.air_date ? new Date(ep.air_date) : null,
           imageUrl: tmdbStillUrl(ep.still_path),
           runtimeMinutes: ep.runtime ?? null,
+          tmdbEpisodeId: ep.id,
         });
       }
     }
