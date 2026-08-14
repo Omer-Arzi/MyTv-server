@@ -14,6 +14,9 @@ import { evaluateMigrationRollbackEligibility, buildMigrationRollbackPreview } f
 import { executeMigrationRollback, MigrationRollbackRefusedError } from '../../../library-health/migration-rollback-executor';
 import { searchProviderCandidatesForSeries } from '../../../library-health/search-provider-candidates-for-series';
 import { saveProviderIdentityDecision, reviewSeasonShrinkForDecision, NoDecisionToReviewError } from '../../../library-health/provider-identity-decisions-store';
+import { findPendingEpisodesCoveredByMapping } from '../../../library-health/numbering-mapping-promotion-logic';
+import { createMissingSeasonsAndEpisodes } from '../../../episode-release-refresh/season-episode-writer';
+import { EpisodeInsertPlan } from '../../../episode-release-refresh/build-episode-insert-plan';
 import { BatchManifest } from '../../../library-health/batch-manifest-logic';
 import { ProviderConfirmationPipelineReport } from '../../../library-health/provider-confirmation-pipeline-reports';
 import {
@@ -34,6 +37,8 @@ import { MigrationHistoryDetailDto } from './dto/migration-history-detail.dto';
 import { MigrationRollbackPreviewDto, MigrationRollbackResultDto } from './dto/migration-rollback.dto';
 import { ProviderCandidateDto, ProviderCandidateSearchResultDto } from './dto/provider-candidate.dto';
 import { ConfirmIdentityDto } from './dto/confirm-identity.dto';
+import { CreateNumberingMappingDto } from './dto/create-numbering-mapping.dto';
+import { NumberingMappingResultDto, PendingEpisodeDto } from './dto/numbering-mapping-result.dto';
 
 const LIBRARY_HEALTH_DIR = path.join(process.cwd(), 'library-health');
 const BATCH_MANIFEST_PATH = path.join(LIBRARY_HEALTH_DIR, 'output', 'latest-batch-manifest.json');
@@ -405,6 +410,96 @@ export class MigrationWorkbenchService {
       throw err;
     }
     return { seriesId, reviewed: true };
+  }
+
+  // Phase 5 of the episode-identity architecture work
+  // (docs/episode-numbering-and-season-shift-risk.md): every
+  // PendingProviderEpisode across every series — a newly-discovered
+  // provider episode whose display season/episode number couldn't be
+  // safely resolved (see numbering-resolution-logic.ts). Read-only; the
+  // resolving action is createNumberingMapping below.
+  async listPendingEpisodes(): Promise<PendingEpisodeDto[]> {
+    const rows = await this.prisma.pendingProviderEpisode.findMany({
+      include: { series: { select: { title: true } } },
+      orderBy: [{ seriesId: 'asc' }, { providerSeasonNumber: 'asc' }, { providerEpisodeNumber: 'asc' }],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      seriesId: r.seriesId,
+      seriesTitle: r.series.title,
+      tmdbEpisodeId: r.tmdbEpisodeId,
+      providerSeasonNumber: r.providerSeasonNumber,
+      providerEpisodeNumber: r.providerEpisodeNumber,
+      title: r.title,
+      airDate: r.airDate ? r.airDate.toISOString() : null,
+      discoveredAt: r.discoveredAt.toISOString(),
+    }));
+  }
+
+  // The one boundary-confirmation action: "provider season X episodes Y-Z
+  // display as local season N starting at episode M." A single confirmed
+  // mapping covers every future episode in that range automatically
+  // (providerEpisodeEnd: null = open-ended) — never a per-episode chore,
+  // per the architecture plan's explicit "confirm once" preference.
+  //
+  // Immediately promotes every already-pending episode this new mapping
+  // covers into a real Episode row, reusing
+  // season-episode-writer.ts's createMissingSeasonsAndEpisodes — the exact
+  // same tested write path episode-release-refresh and library-health's
+  // catalog-reconciliation both already use, never a second insert
+  // implementation. The promoted episode keeps its real tmdbEpisodeId
+  // (never recreated as a new identity) and, since it was never an Episode
+  // row before this call, has no EpisodeWatch to worry about losing.
+  async createNumberingMapping(userId: string, seriesId: string, dto: CreateNumberingMappingDto): Promise<NumberingMappingResultDto> {
+    const series = await this.prisma.series.findUnique({ where: { id: seriesId } });
+    if (!series) throw new NotFoundException(`Series ${seriesId} not found`);
+
+    const pendingRows = await this.prisma.pendingProviderEpisode.findMany({ where: { seriesId } });
+    const promoted = findPendingEpisodesCoveredByMapping(pendingRows, {
+      providerSeasonNumber: dto.providerSeasonNumber,
+      providerEpisodeStart: dto.providerEpisodeStart,
+      providerEpisodeEnd: dto.providerEpisodeEnd ?? null,
+      localSeasonNumber: dto.localSeasonNumber,
+      localEpisodeOffset: dto.localEpisodeOffset,
+    });
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const mapping = await tx.seriesNumberingMapping.create({
+        data: {
+          seriesId,
+          providerSeasonNumber: dto.providerSeasonNumber,
+          providerEpisodeStart: dto.providerEpisodeStart,
+          providerEpisodeEnd: dto.providerEpisodeEnd ?? null,
+          localSeasonNumber: dto.localSeasonNumber,
+          localEpisodeOffset: dto.localEpisodeOffset,
+          confirmedBy: userId,
+        },
+      });
+
+      let episodeIds: string[] = [];
+      if (promoted.length > 0) {
+        const insertPlan: EpisodeInsertPlan = {
+          episodesToInsert: promoted.map((p) => ({
+            seasonNumber: p.seasonNumber,
+            episodeNumber: p.episodeNumber,
+            title: p.title,
+            overview: p.overview,
+            airDate: p.airDate,
+            imageUrl: p.imageUrl,
+            runtimeMinutes: p.runtimeMinutes,
+            tmdbEpisodeId: p.tmdbEpisodeId,
+          })),
+          seasonNumbersToCreate: [...new Set(promoted.map((p) => p.seasonNumber))],
+        };
+        const writeResult = await createMissingSeasonsAndEpisodes(tx, { seriesId, insertPlan, importBatchId: `migration-workbench:numbering-mapping:${mapping.id}` });
+        episodeIds = writeResult.episodeIdsInserted;
+        await tx.pendingProviderEpisode.deleteMany({ where: { id: { in: promoted.map((p) => p.pendingId) } } });
+      }
+
+      return { mapping, episodeIds };
+    });
+
+    return { seriesId, mappingId: result.mapping.id, episodesPromoted: promoted.length, episodeIds: result.episodeIds };
   }
 
   // The single-series live proposal — always a fresh TMDb/TVmaze fetch

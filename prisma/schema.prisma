@@ -95,6 +95,8 @@ model Series {
   providerDecisions ProviderIdentityDecision[]
   syncStatus        SeriesSyncStatus?
   dismissedPossibleMatches DismissedPossibleMatch[]
+  numberingMappings SeriesNumberingMapping[]
+  pendingEpisodes   PendingProviderEpisode[]
 }
 
 // Persistent catalog-sync metadata for the automatic episode-release-refresh
@@ -251,6 +253,74 @@ model Season {
   episodes Episode[]
 
   @@unique([seriesId, seasonNumber])
+}
+
+// Boundary/range display-numbering mapping — the resolution mechanism for
+// docs/episode-numbering-and-season-shift-risk.md's core problem: a
+// provider's own season/episode numbering isn't always the numbering a show
+// should DISPLAY as (Re:Zero's absolute-vs-per-arc split is the confirmed
+// real example, repaired manually before this table existed). One row per
+// known boundary, not one row per episode — `providerEpisodeEnd: null`
+// means open-ended (covers this and every future episode in that provider
+// season automatically, so confirming a boundary once is enough, never a
+// per-episode chore). `localEpisodeNumber = providerEpisodeNumber -
+// localEpisodeOffset`.
+//
+// A series with ZERO rows here is unaffected by any of this — new
+// provider seasons are inserted directly under the provider's own
+// numbering, exactly as before this table existed (the common, correct
+// case for the vast majority of shows). This table's mere presence for a
+// series is also the OPT-IN signal that the series needs numbering
+// supervision at all: only once a series has at least one confirmed
+// mapping does a newly-discovered, unmapped provider season get held for
+// review (see PendingProviderEpisode) instead of auto-created.
+model SeriesNumberingMapping {
+  id                   String    @id @default(uuid())
+  seriesId             String
+  providerSeasonNumber Int
+  providerEpisodeStart Int
+  providerEpisodeEnd   Int?
+  localSeasonNumber    Int
+  localEpisodeOffset   Int
+  confirmedAt          DateTime  @default(now())
+  confirmedBy          String?
+
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, providerSeasonNumber, providerEpisodeStart])
+}
+
+// Holds a newly-discovered provider episode whose display season/episode
+// number cannot yet be safely determined — a series that has at least one
+// SeriesNumberingMapping row (i.e. has already been flagged as needing
+// numbering supervision) discovered a new provider season/episode with no
+// mapping range covering it. Deliberately a SEPARATE table from Episode
+// rather than a nullable-season/episode status on Episode itself: keeps
+// every existing Episode query (Watch Next, Upcoming, Recently Watched,
+// series detail) automatically, structurally unaffected — a pending row
+// simply isn't an Episode yet, so nothing downstream needs a new filter.
+// Provider identity (tmdbEpisodeId) and every other real field the
+// provider gave us is captured immediately and durably; only DISPLAY
+// numbering is deferred. Promoted into a real Episode row (same
+// tmdbEpisodeId, never recreated as a new identity) the moment a human
+// confirms a SeriesNumberingMapping whose range covers it — see
+// MigrationWorkbenchService.createNumberingMapping.
+model PendingProviderEpisode {
+  id                    String    @id @default(uuid())
+  seriesId              String
+  tmdbEpisodeId         Int       @unique
+  providerSeasonNumber  Int
+  providerEpisodeNumber Int
+  title                 String?
+  overview              String?
+  airDate               DateTime?
+  imageUrl              String?
+  runtimeMinutes        Int?
+  discoveredAt          DateTime  @default(now())
+
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, providerSeasonNumber, providerEpisodeNumber])
 }
 
 model Episode {

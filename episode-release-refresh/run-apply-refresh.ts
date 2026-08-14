@@ -131,6 +131,17 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
   });
   const seasonShrinkReviewedBySeriesId = new Map(identityDecisions.map((d) => [d.seriesId, d.seasonShrinkReviewed]));
 
+  const numberingMappingRows = await prisma.seriesNumberingMapping.findMany({
+    where: { seriesId: { in: seriesIds } },
+    select: { seriesId: true, providerSeasonNumber: true, providerEpisodeStart: true, providerEpisodeEnd: true, localSeasonNumber: true, localEpisodeOffset: true },
+  });
+  const numberingMappingsBySeriesId = new Map<string, typeof numberingMappingRows>();
+  for (const m of numberingMappingRows) {
+    const list = numberingMappingsBySeriesId.get(m.seriesId) ?? [];
+    list.push(m);
+    numberingMappingsBySeriesId.set(m.seriesId, list);
+  }
+
   return progresses.map((p) => ({
     id: p.series.id,
     title: p.series.title,
@@ -139,6 +150,7 @@ async function loadCandidateSeries(prisma: PrismaClient, userId: string): Promis
     userStatus: p.userStatus,
     nextEpisodeId: p.nextEpisodeId,
     seasonShrinkReviewed: seasonShrinkReviewedBySeriesId.get(p.series.id) ?? false,
+    numberingMappings: numberingMappingsBySeriesId.get(p.series.id) ?? [],
     episodes: p.series.seasons.flatMap((season) =>
       season.episodes.map((ep) => ({
         id: ep.id,

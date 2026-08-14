@@ -11,6 +11,8 @@ import { MigrationHistoryDetailDto } from './dto/migration-history-detail.dto';
 import { MigrationRollbackPreviewDto, MigrationRollbackResultDto } from './dto/migration-rollback.dto';
 import { ProviderCandidateSearchResultDto } from './dto/provider-candidate.dto';
 import { ConfirmIdentityDto } from './dto/confirm-identity.dto';
+import { CreateNumberingMappingDto } from './dto/create-numbering-mapping.dto';
+import { NumberingMappingResultDto, PendingEpisodeDto } from './dto/numbering-mapping-result.dto';
 
 @ApiTags('migration-workbench')
 @Controller('migration-workbench')
@@ -75,6 +77,31 @@ export class MigrationWorkbenchController {
   })
   reviewSeasonShrink(@CurrentUser() user: RequestUser, @Param('seriesId') seriesId: string) {
     return this.migrationWorkbenchService.reviewSeasonShrink(user.id, seriesId);
+  }
+
+  @Get('pending-episodes')
+  @ApiOperation({
+    summary: 'List every newly-discovered episode still awaiting a numbering-boundary decision, across all series',
+    description:
+      'A PendingProviderEpisode row exists when a series under numbering supervision (has at least one confirmed SeriesNumberingMapping) discovered a new provider episode with no mapping range covering it — its real identity ' +
+      '(tmdbEpisodeId, title, airDate, etc.) is already captured, only its display season/episode number is unresolved. Resolve one via POST :seriesId/numbering-mapping.',
+  })
+  @ApiOkResponse({ type: PendingEpisodeDto, isArray: true })
+  listPendingEpisodes(): Promise<PendingEpisodeDto[]> {
+    return this.migrationWorkbenchService.listPendingEpisodes();
+  }
+
+  @Post(':seriesId/numbering-mapping')
+  @ApiOperation({
+    summary: 'Confirm a display-numbering boundary for a series, resolving any already-pending episodes it covers',
+    description:
+      '"Provider season X episodes Y-Z display as local season N starting at episode M" — one confirmed mapping covers this and every future episode in that range automatically (omit providerEpisodeEnd for open-ended), ' +
+      'never a per-episode chore. Immediately promotes every PendingProviderEpisode this new mapping covers into a real Episode row, using the exact same insert path the ongoing refresh pipeline uses. A series with zero mappings is entirely unaffected by this mechanism; ' +
+      'creating the FIRST mapping for a series also opts it into numbering supervision going forward (see docs/episode-numbering-and-season-shift-risk.md).',
+  })
+  @ApiOkResponse({ type: NumberingMappingResultDto })
+  createNumberingMapping(@CurrentUser() user: RequestUser, @Param('seriesId') seriesId: string, @Body() body: CreateNumberingMappingDto): Promise<NumberingMappingResultDto> {
+    return this.migrationWorkbenchService.createNumberingMapping(user.id, seriesId, body);
   }
 
   @Post(':seriesId/confirm')

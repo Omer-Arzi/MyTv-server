@@ -26,6 +26,8 @@ import { reconcileSeriesProgress } from './progress-reconciliation-logic';
 import { OrderedEpisodeForNextLookup } from '../src/modules/series/series-query-helpers';
 import { ApplyProcessedSeriesEntry } from './apply-refresh-reports';
 import { ProviderRefreshClient } from './provider-refresh-client';
+import { NumberingMappingInput, resolveEpisodeNumbering } from './numbering-resolution-logic';
+import { upsertPendingEpisodes } from './pending-episode-writer';
 
 export interface SeriesRow {
   id: string;
@@ -39,6 +41,12 @@ export interface SeriesRow {
   // false when no decision row exists at all — see compareSeriesCatalog's
   // seasonShrinkReviewed doc comment for what this unlocks.
   seasonShrinkReviewed: boolean;
+  // SeriesNumberingMapping rows for this series, or [] when none exist —
+  // see numbering-resolution-logic.ts's doc comment. A series with no rows
+  // here is entirely unaffected by Phase 4: new episodes insert directly
+  // under the provider's own numbering, exactly as before this mechanism
+  // existed.
+  numberingMappings: NumberingMappingInput[];
 }
 
 export interface RefreshOneSeriesInput {
@@ -129,17 +137,37 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
       now,
     });
 
+    // Phase 4 of the episode-identity architecture work: only relevant when
+    // this refresh would otherwise insert something (mirrors
+    // buildEpisodeInsertPlan's own classification gate below) — a series
+    // blocked for a different reason (RISKY_DO_NOT_APPLY,
+    // NEEDS_MANUAL_REVIEW, ...) doesn't also get numbering-review noise
+    // piled on top. A pass-through no-op for the ~all series with zero
+    // SeriesNumberingMapping rows regardless of classification.
+    const numbering =
+      comparison.classification === 'NEW_RELEASE_AVAILABLE'
+        ? resolveEpisodeNumbering({ newEpisodes: comparison.newEpisodes, providerEpisodes, mappings: series.numberingMappings })
+        : { resolvedNewEpisodes: comparison.newEpisodes, resolvedProviderEpisodes: providerEpisodes, pending: [], warnings: [] as string[] };
+
     const insertPlan = buildEpisodeInsertPlan({
       classification: comparison.classification,
-      newEpisodes: comparison.newEpisodes,
-      providerEpisodes,
+      newEpisodes: numbering.resolvedNewEpisodes,
+      providerEpisodes: numbering.resolvedProviderEpisodes,
       localSeasonNumbers,
     });
 
     // Always the true "would insert" counts, independent of classification
     // — see build-episode-insert-plan.ts's previewEpisodeInsertCounts doc
     // comment for why this is never used for the actual write decision.
-    const preview = previewEpisodeInsertCounts({ newEpisodes: comparison.newEpisodes, providerEpisodes, localSeasonNumbers });
+    const preview = previewEpisodeInsertCounts({ newEpisodes: numbering.resolvedNewEpisodes, providerEpisodes: numbering.resolvedProviderEpisodes, localSeasonNumbers });
+
+    if (apply && numbering.pending.length > 0) {
+      await upsertPendingEpisodes(prisma, series.id, numbering.pending);
+    }
+    const pendingWarnings =
+      numbering.pending.length > 0
+        ? [`${numbering.pending.length} new episode(s) held for numbering review (no SeriesNumberingMapping range covers them): ${numbering.pending.map((p) => `S${p.providerSeasonNumber}E${p.providerEpisodeNumber}`).join(', ')}`]
+        : [];
 
     const baseEntry = {
       seriesId: series.id,
@@ -152,7 +180,7 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
       seasonsPlanned: preview.seasonNumbers,
       bulkInsertReason: comparison.bulkInsertReason,
       seasonZeroReason: comparison.seasonZeroReason,
-      warnings: comparison.warnings,
+      warnings: [...comparison.warnings, ...numbering.warnings, ...pendingWarnings],
     };
 
     if (insertPlan.episodesToInsert.length === 0) {

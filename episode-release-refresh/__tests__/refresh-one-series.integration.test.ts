@@ -65,6 +65,7 @@ describeIfDbConfigured('refreshOneSeries (integration, real Postgres + mocked TM
       userStatus,
       nextEpisodeId: null,
       seasonShrinkReviewed: false,
+      numberingMappings: [],
       episodes: [
         { id: ep1.id, seasonNumber: 1, episodeNumber: 1, title: null, overview: null, airDate: PAST, imageUrl: null, runtimeMinutes: null, watched: true },
       ],
@@ -165,5 +166,64 @@ describeIfDbConfigured('refreshOneSeries (integration, real Postgres + mocked TM
 
     const episodeCount = await prisma.episode.count({ where: { season: { seriesId: row.id } } });
     expect(episodeCount).toBe(1); // untouched
+  });
+
+  // Phase 4 end-to-end: a series under numbering supervision (has at least
+  // one SeriesNumberingMapping row) whose newly-discovered episode isn't
+  // covered by any mapping range must be held in PendingProviderEpisode,
+  // never inserted as a real Episode -- proves the live DB-write wiring
+  // (upsertPendingEpisodes), not just the pure resolution logic.
+  it('holds an unmapped new episode as PendingProviderEpisode instead of inserting it, for a series under numbering supervision', async () => {
+    const user = await createFixtureUser();
+    const { series, row } = await createFixtureSeries(user.id, UserSeriesStatus.WATCHING);
+
+    // Mapping covers ONLY episode 1 -- narrow on purpose, so the mock TMDb's
+    // episode 2 (below) is NOT covered by anything.
+    await prisma.seriesNumberingMapping.create({
+      data: { seriesId: series.id, providerSeasonNumber: 1, providerEpisodeStart: 1, providerEpisodeEnd: 1, localSeasonNumber: 1, localEpisodeOffset: 0 },
+    });
+    row.numberingMappings = [{ providerSeasonNumber: 1, providerEpisodeStart: 1, providerEpisodeEnd: 1, localSeasonNumber: 1, localEpisodeOffset: 0 }];
+
+    const outcome = await refreshOneSeries({ prisma, tmdb: buildMockTmdb(), userId: user.id, series: row, apply: true });
+
+    expect(outcome.kind).toBe('processed');
+    if (outcome.kind !== 'processed') throw new Error('unreachable');
+    expect(outcome.entry.episodesInserted).toBe(0);
+    expect(outcome.entry.warnings.some((w) => w.includes('held for numbering review'))).toBe(true);
+
+    const episodeCount = await prisma.episode.count({ where: { season: { seriesId: row.id } } });
+    expect(episodeCount).toBe(1); // still just the original fixture episode -- nothing new inserted
+
+    const pending = await prisma.pendingProviderEpisode.findMany({ where: { seriesId: row.id } });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ providerSeasonNumber: 1, providerEpisodeNumber: 2, tmdbEpisodeId: 2, title: 'Episode 2' });
+  });
+
+  // A mapping range that DOES cover the new episode relabels it and lets it
+  // insert normally, under the RESOLVED local season/episode -- not the
+  // provider's own raw numbering.
+  it('inserts a mapped new episode under its resolved local season/episode number', async () => {
+    const user = await createFixtureUser();
+    const { series, row } = await createFixtureSeries(user.id, UserSeriesStatus.WATCHING);
+
+    // Covers episode 2 too, remapped to local season 9 episode 1.
+    await prisma.seriesNumberingMapping.create({
+      data: { seriesId: series.id, providerSeasonNumber: 1, providerEpisodeStart: 2, providerEpisodeEnd: 2, localSeasonNumber: 9, localEpisodeOffset: 1 },
+    });
+    row.numberingMappings = [{ providerSeasonNumber: 1, providerEpisodeStart: 2, providerEpisodeEnd: 2, localSeasonNumber: 9, localEpisodeOffset: 1 }];
+
+    const outcome = await refreshOneSeries({ prisma, tmdb: buildMockTmdb(), userId: user.id, series: row, apply: true });
+
+    expect(outcome.kind).toBe('processed');
+    if (outcome.kind !== 'processed') throw new Error('unreachable');
+    expect(outcome.entry.episodesInserted).toBe(1);
+
+    const pending = await prisma.pendingProviderEpisode.findMany({ where: { seriesId: row.id } });
+    expect(pending).toHaveLength(0);
+
+    const insertedSeason = await prisma.season.findFirst({ where: { seriesId: row.id, seasonNumber: 9 }, include: { episodes: true } });
+    expect(insertedSeason?.episodes).toHaveLength(1);
+    expect(insertedSeason?.episodes[0].episodeNumber).toBe(1);
+    expect(insertedSeason?.episodes[0].tmdbEpisodeId).toBe(2);
   });
 });

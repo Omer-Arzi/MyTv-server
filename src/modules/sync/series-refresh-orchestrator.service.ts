@@ -127,6 +127,11 @@ export class SeriesRefreshOrchestratorService {
       select: { seasonShrinkReviewed: true },
     });
 
+    const numberingMappings = await this.prisma.seriesNumberingMapping.findMany({
+      where: { seriesId },
+      select: { providerSeasonNumber: true, providerEpisodeStart: true, providerEpisodeEnd: true, localSeasonNumber: true, localEpisodeOffset: true },
+    });
+
     const existingSyncStatus = series.syncStatus;
 
     if (options.onlyIfStale) {
@@ -157,6 +162,7 @@ export class SeriesRefreshOrchestratorService {
       userStatus: progress.userStatus,
       nextEpisodeId: progress.nextEpisodeId,
       seasonShrinkReviewed: identityDecision?.seasonShrinkReviewed ?? false,
+      numberingMappings,
       episodes: series.seasons.flatMap((season) =>
         season.episodes.map((ep) => ({
           id: ep.id,
