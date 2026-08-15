@@ -627,6 +627,23 @@ describe('detectSuspiciousBulkInsert', () => {
   it('does not flag zero new episodes', () => {
     expect(detectSuspiciousBulkInsert(0, 0)).toEqual({ suspicious: false, reason: null });
   });
+
+  // The bug this closes: "ted" (15 episodes) and "Ted Lasso" (44 episodes)
+  // both got permanently stuck in BLOCKED_MANUAL_REVIEW on their very
+  // first-ever sync — a brand-new watchlist addition's whole catalog is
+  // "new" relative to zero local episodes, which used to trip the
+  // absolute threshold even though there was no existing local data at
+  // risk. The absolute check is now skipped entirely when localCount is 0.
+  it('does not flag a brand-new series bringing in its whole catalog on the first sync, however large', () => {
+    expect(detectSuspiciousBulkInsert(0, 15)).toEqual({ suspicious: false, reason: null });
+    expect(detectSuspiciousBulkInsert(0, 44)).toEqual({ suspicious: false, reason: null });
+  });
+
+  it('still applies the absolute threshold once the series has even one local episode', () => {
+    const result = detectSuspiciousBulkInsert(1, 15);
+    expect(result.suspicious).toBe(true);
+    expect(result.reason).toContain('absolute');
+  });
 });
 
 describe('chunkArray', () => {

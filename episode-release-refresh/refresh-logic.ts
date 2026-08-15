@@ -166,15 +166,25 @@ export interface SuspiciousBulkInsertCheck {
 
 // Two independent triggers, checked in this order only for a stable
 // reported reason — either alone is sufficient:
-//   1. absolute: more than 10 released episodes proposed in one run,
-//      regardless of how large the local catalog already is.
+//   1. absolute: more than 10 released episodes proposed in one run for a
+//      series that already has local episodes, regardless of how large
+//      that local catalog is. Skipped entirely when localEpisodeCount is
+//      0 — a brand-new watchlist addition's first-ever sync legitimately
+//      proposes its whole catalog at once (every episode is "new" relative
+//      to nothing), which is expected initial population, not a sign of
+//      an incomplete existing catalog. There's no existing local data this
+//      guard could protect in that case. Confirmed real: "ted" (15
+//      episodes) and "Ted Lasso" (44 episodes) both got permanently stuck
+//      in BLOCKED_MANUAL_REVIEW on their very first sync despite having a
+//      completely ordinary provider match, simply for having more than 10
+//      episodes total.
 //   2. relative: for a local catalog that already has a meaningful size
 //      (>=10 episodes), proposed released inserts exceeding half of it —
 //      catches a smaller-scale version of the same gap without penalizing
 //      a brand-new, barely-started series (where the relative check would
 //      otherwise trigger on almost any first episode).
 export function detectSuspiciousBulkInsert(localEpisodeCount: number, releasedNewEpisodeCount: number): SuspiciousBulkInsertCheck {
-  if (releasedNewEpisodeCount > SUSPICIOUS_BULK_INSERT_ABSOLUTE_THRESHOLD) {
+  if (localEpisodeCount > 0 && releasedNewEpisodeCount > SUSPICIOUS_BULK_INSERT_ABSOLUTE_THRESHOLD) {
     return {
       suspicious: true,
       reason: `released new episode count (${releasedNewEpisodeCount}) exceeds the absolute bulk-insert threshold (${SUSPICIOUS_BULK_INSERT_ABSOLUTE_THRESHOLD}) — likely an incomplete local catalog, not a genuine new release`,
