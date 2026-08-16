@@ -1256,3 +1256,67 @@ disappeared/reappeared per `hasPreviousPage`/`hasNextPage`. Unit tests extended 
   scrolling), not the react-native-web platform gap itself. In practice the local repro showed the view
   staying anchored at the button's position (top or bottom) with new content simply extending past it,
   not jumping — but this hasn't been checked on a real mobile device yet.
+
+---
+
+## Phase 17 — Backend gap: the ongoing sync never actually wrote future episodes
+
+### Motivation
+User report (2026-08-16): shows like Bleach only ever appear in Upcoming on the day an episode
+actually airs, never days/weeks ahead, even though this feature's whole premise (Phase 1's design)
+is a live read over `Episode`/`UserSeriesProgress` — the assumption being that a future-dated
+`Episode` row already exists locally ahead of its air date. Investigated and confirmed real, in-house
+(not a TMDb data-availability limitation — TMDb happily returns future air dates weeks/months out):
+`episode-release-refresh/build-episode-insert-plan.ts`'s `buildEpisodeInsertPlan` had a `filter((ep) =>
+ep.released)` — a deliberate, pre-Upcoming design decision ("Phase 1 never has to reason about
+placeholder air dates going stale") that nothing ever revisited once Upcoming started depending on the
+opposite assumption. Confirmed against production: only 16 future-dated `Episode` rows existed in the
+*entire* database, concentrated in 3 shows that got them as a side effect of a one-time Pipeline A
+migration backfill — every other actively-tracked show, including Bleach, had zero.
+
+### Fix
+- `build-episode-insert-plan.ts`: `buildEpisodeInsertPlan` now also accepts `FUTURE_ONLY` (previously
+  only `NEW_RELEASE_AVAILABLE`), and `buildEpisodeInsertCandidates` gained an `includeFuture` flag
+  (default `false`, preserving every other caller's exact prior behavior — in particular
+  library-health's `buildMigrationCatalogInsertPlan`, which deliberately stays released-only) that
+  `buildEpisodeInsertPlan` now passes `true`. A `FUTURE_ONLY` series has zero released new episodes by
+  definition, so before this change its plan was always empty regardless — this doesn't weaken any
+  existing safety gate (`RISKY_DO_NOT_APPLY`/`NEEDS_MANUAL_REVIEW`/`SUSPICIOUS_BULK_INSERT`/
+  `SEASON_ZERO_PROPOSED` still block everything, released or future).
+- `refresh-one-series.ts`: the Phase 4 numbering-resolution step (`resolveEpisodeNumbering`) now also
+  runs for `FUTURE_ONLY`, not just `NEW_RELEASE_AVAILABLE`, so a future episode outside every known
+  `SeriesNumberingMapping` range still gets held as a `PendingProviderEpisode` for review instead of
+  silently inserted under a guessed season/episode label.
+- New capability, not just a filter change: `compareSeriesCatalog`'s `EpisodeFieldChange` (title/
+  overview/airDate/imageUrl/runtimeMinutes diffs against already-existing episodes) was previously
+  report-only — explicitly documented as "never applies metadata fieldChanges." That was fine while
+  every stored date was already in the past and unlikely to change; it stopped being safe the moment
+  future dates started getting stored early, since a future date is exactly the kind of value that can
+  shift before it airs (delays, schedule confirmations). New `episode-field-update-writer.ts` +
+  `apply-refresh-transaction.ts`'s `applyEpisodeFieldUpdatesForSeries` actually write these corrections
+  now, in their own transaction, called unconditionally from `refreshOneSeries` (before branching on
+  whether there's anything to insert) — so a field-only refresh (nothing new to insert, but an existing
+  episode's stored date needs correcting) is corrected too, not just the insert-plan path. Deliberately
+  no live-eligibility/status gate on this write (unlike episode inserts/progress) — it's a pure fact
+  correction with no watch-history or identity impact, so it applies regardless of the user's current
+  status.
+- `episode-sync-scheduler.service.ts`: widened the provider-calling tick from hourly to twice a day
+  (`DEFAULT_TICK_INTERVAL_MS`), a user-requested cost/freshness tradeoff now that manual single-series
+  refresh covers the "check this right now" case. The separate, provider-free local-release-activation
+  tick is unchanged (still hourly) — it's what flips an already-stored future episode into Watch Next
+  the moment its date arrives, and costs nothing to run.
+
+### Explicitly not done (disclosed, not an oversight)
+- `detectSuspiciousBulkInsert`/`detectSeasonZeroProposal` still only count *released* new episodes. A
+  large batch of future episodes (e.g. a whole new season announced at once) has no equivalent sanity
+  guard — considered lower-stakes than a released bulk insert (nothing's watched yet, trivially
+  correctable on a later refresh) but left as a deliberate, disclosed gap rather than adding new
+  tuning-parameter machinery beyond what was asked for.
+
+### Verified
+`npx tsc --noEmit` clean. Full server suite: 118 suites / 1476 tests, all green (was 118/1472 — 2 new
+integration tests in `apply-refresh-transaction.integration.test.ts` for the field-update writer, 2 new
+integration tests in `refresh-one-series.integration.test.ts` proving future-episode insertion and the
+field-update-with-zero-inserts path through the real shared pipeline against a real Postgres database,
+plus updated unit tests in `build-episode-insert-plan.test.ts`/`refresh-logic.test.ts` for the new
+behavior).

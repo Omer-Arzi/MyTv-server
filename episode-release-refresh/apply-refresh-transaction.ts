@@ -18,8 +18,10 @@ import { PrismaClient, UserSeriesStatus } from '@prisma/client';
 import { deriveActiveProgress, OrderedEpisodeForNextLookup } from '../src/modules/series/series-query-helpers';
 import { checkLiveWriteEligibility, decideProgressRecompute } from './apply-refresh-writes';
 import { EpisodeInsertPlan } from './build-episode-insert-plan';
+import { EpisodeFieldChange } from './refresh-logic';
 import { hasProgressChanged } from './progress-reconciliation-logic';
 import { createMissingSeasonsAndEpisodes } from './season-episode-writer';
+import { applyEpisodeFieldUpdates, ApplyEpisodeFieldUpdatesResult } from './episode-field-update-writer';
 
 export const PHASE1_APPLY_IMPORT_BATCH_ID = 'episode-release-refresh:phase1-apply';
 
@@ -176,4 +178,26 @@ export async function applySeriesInsertPlan(prisma: PrismaClient, input: ApplySe
 
     return { seasonsCreated, episodesInserted, duplicatesSkipped, progressRecomputed: true, progressChange, progressSkippedReason: null, writeSkippedReason: null };
   });
+}
+
+// Deliberately its own transaction, separate from applySeriesInsertPlan's
+// above. Metadata field corrections (title/overview/airDate/imageUrl/
+// runtimeMinutes) are unconditional on whether this same refresh also has
+// new episodes to insert or a progress recompute to perform —
+// refreshOneSeries calls this once, up front, before branching on whether
+// there's anything to insert — and touch a fully disjoint set of rows
+// (existing, already-matched episodes only; never one this same refresh is
+// about to insert), so there's no ordering dependency or shared-row race
+// with applySeriesInsertPlan's own transaction. No live-eligibility gate
+// here (unlike applySeriesInsertPlan): this never touches UserSeriesProgress
+// or watch state, only corrects already-settled episode metadata, so it
+// applies regardless of the user's current status (a stale title/date
+// should get corrected even for a DROPPED/PAUSED show — it's a fact
+// correction, not a recommendation).
+//
+// Never call this with an empty fieldChanges array — same convention as
+// applySeriesInsertPlan above; the caller only invokes it once it already
+// knows there's something to correct.
+export async function applyEpisodeFieldUpdatesForSeries(prisma: PrismaClient, fieldChanges: EpisodeFieldChange[]): Promise<ApplyEpisodeFieldUpdatesResult> {
+  return prisma.$transaction(async (tx) => applyEpisodeFieldUpdates(tx, fieldChanges));
 }

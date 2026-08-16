@@ -13,9 +13,8 @@ function providerEp(overrides: Partial<ProviderEpisodeInput> & Pick<ProviderEpis
 }
 
 describe('buildEpisodeInsertPlan', () => {
-  const NON_NEW_RELEASE_CLASSIFICATIONS: RefreshClassification[] = [
+  const NON_WRITABLE_CLASSIFICATIONS: RefreshClassification[] = [
     'NO_CHANGE',
-    'FUTURE_ONLY',
     'NEEDS_MANUAL_REVIEW',
     'RISKY_DO_NOT_APPLY',
     'SUSPICIOUS_BULK_INSERT',
@@ -23,7 +22,7 @@ describe('buildEpisodeInsertPlan', () => {
     'PROVIDER_ERROR',
   ];
 
-  it.each(NON_NEW_RELEASE_CLASSIFICATIONS)('returns an empty plan for classification %s even when newEpisodes is non-empty', (classification) => {
+  it.each(NON_WRITABLE_CLASSIFICATIONS)('returns an empty plan for classification %s even when newEpisodes is non-empty', (classification) => {
     const plan = buildEpisodeInsertPlan({
       classification,
       newEpisodes: [newEp({ seasonNumber: 1, episodeNumber: 2, released: true })],
@@ -33,7 +32,12 @@ describe('buildEpisodeInsertPlan', () => {
     expect(plan).toEqual({ episodesToInsert: [], seasonNumbersToCreate: [] });
   });
 
-  it('plans only released new episodes, excluding future ones', () => {
+  // 2026-08-16: previously released-only. A future episode now gets
+  // inserted too (both under NEW_RELEASE_AVAILABLE, mixed with released
+  // ones as here, and under FUTURE_ONLY on its own — see the next test) so
+  // the Upcoming timeline has something to show ahead of the air date,
+  // instead of every show only ever appearing there on the day it airs.
+  it('plans both released and future new episodes together under NEW_RELEASE_AVAILABLE', () => {
     const plan = buildEpisodeInsertPlan({
       classification: 'NEW_RELEASE_AVAILABLE',
       newEpisodes: [
@@ -43,8 +47,25 @@ describe('buildEpisodeInsertPlan', () => {
       providerEpisodes: [providerEp({ seasonNumber: 1, episodeNumber: 2, airDate: PAST }), providerEp({ seasonNumber: 1, episodeNumber: 3, airDate: FUTURE })],
       localSeasonNumbers: [1],
     });
+    expect(plan.episodesToInsert).toHaveLength(2);
+    expect(plan.episodesToInsert.map((e) => e.episodeNumber).sort()).toEqual([2, 3]);
+  });
+
+  // FUTURE_ONLY means zero released new episodes by definition — before
+  // this change its plan was therefore always empty (nothing but future
+  // episodes to filter out). Now it's the classification that carries
+  // future-only inserts, e.g. a brand new season announced for a
+  // caught-up/currently-airing show with no episode of it released yet.
+  it('plans future-only new episodes under FUTURE_ONLY, not just NEW_RELEASE_AVAILABLE', () => {
+    const plan = buildEpisodeInsertPlan({
+      classification: 'FUTURE_ONLY',
+      newEpisodes: [newEp({ seasonNumber: 2, episodeNumber: 1, released: false, airDate: FUTURE })],
+      providerEpisodes: [providerEp({ seasonNumber: 2, episodeNumber: 1, airDate: FUTURE })],
+      localSeasonNumbers: [1],
+    });
     expect(plan.episodesToInsert).toHaveLength(1);
-    expect(plan.episodesToInsert[0]).toMatchObject({ seasonNumber: 1, episodeNumber: 2 });
+    expect(plan.episodesToInsert[0]).toMatchObject({ seasonNumber: 2, episodeNumber: 1, airDate: FUTURE });
+    expect(plan.seasonNumbersToCreate).toEqual([2]);
   });
 
   it('carries full episode fields (overview/imageUrl/runtimeMinutes) from providerEpisodes, not just newEpisodes', () => {

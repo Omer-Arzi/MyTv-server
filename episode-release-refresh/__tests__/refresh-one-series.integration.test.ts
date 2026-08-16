@@ -226,4 +226,79 @@ describeIfDbConfigured('refreshOneSeries (integration, real Postgres + mocked TM
     expect(insertedSeason?.episodes[0].episodeNumber).toBe(1);
     expect(insertedSeason?.episodes[0].tmdbEpisodeId).toBe(2);
   });
+
+  // 2026-08-16: proves the Upcoming-timeline motivation end to end — a
+  // not-yet-aired episode now gets inserted through the real shared
+  // pipeline (not just the pure buildEpisodeInsertPlan unit test), so it
+  // exists locally ahead of its air date instead of only appearing the day
+  // it airs.
+  it('inserts a future (not-yet-aired) new episode under FUTURE_ONLY, so it exists locally ahead of its air date', async () => {
+    const user = await createFixtureUser();
+    const { row } = await createFixtureSeries(user.id, UserSeriesStatus.WATCHING);
+    const farFuture = new Date(Date.now() + 30 * DAY_MS);
+
+    const futureOnlyTmdb = {
+      getShowDetails: jest.fn().mockResolvedValue({ id: 1, name: 'Mock Show', number_of_seasons: 1, status: 'Returning Series', first_air_date: '2020-01-01', genres: [], original_language: 'en', origin_country: ['US'] }),
+      getSeasonsBatch: jest.fn().mockResolvedValue({
+        'season/1': {
+          id: 1,
+          season_number: 1,
+          episodes: [
+            { id: 1, season_number: 1, episode_number: 1, name: 'Episode 1', air_date: PAST.toISOString().slice(0, 10) },
+            { id: 2, season_number: 1, episode_number: 2, name: 'Episode 2', air_date: farFuture.toISOString().slice(0, 10) },
+          ],
+        },
+      }),
+    } as unknown as TmdbClient;
+
+    const outcome = await refreshOneSeries({ prisma, tmdb: futureOnlyTmdb, userId: user.id, series: row, apply: true });
+
+    expect(outcome.kind).toBe('processed');
+    if (outcome.kind !== 'processed') throw new Error('unreachable');
+    expect(outcome.entry.classification).toBe('FUTURE_ONLY');
+    expect(outcome.entry.episodesInserted).toBe(1);
+
+    const insertedEpisode = await prisma.episode.findFirst({ where: { season: { seriesId: row.id }, episodeNumber: 2 } });
+    expect(insertedEpisode).not.toBeNull();
+    expect(insertedEpisode?.airDate?.getTime()).toBe(new Date(farFuture.toISOString().slice(0, 10)).getTime());
+    expect(insertedEpisode?.tmdbEpisodeId).toBe(2);
+
+    // FUTURE_ONLY never touches progress for a WATCHING series either — the
+    // new episode isn't released, so it can't become "next" yet.
+    const progress = await prisma.userSeriesProgress.findUniqueOrThrow({ where: { userId_seriesId: { userId: user.id, seriesId: row.id } } });
+    expect(progress.nextEpisodeId).toBeNull();
+  });
+
+  // Proves the fieldChanges apply path is genuinely unconditional on
+  // whether there's also something to insert — this specific fixture has
+  // ZERO new episodes (the only exercise for refreshOneSeries's early-return
+  // "no episodes to insert" branch), so this only passes if the field-update
+  // call really does happen before that branch split, not folded inside
+  // applySeriesInsertPlan's own (unreached, in this test) transaction.
+  it('corrects an existing episode\'s title via the live pipeline even when there is nothing new to insert', async () => {
+    const user = await createFixtureUser();
+    const { row } = await createFixtureSeries(user.id, UserSeriesStatus.WATCHING);
+
+    const noNewEpisodesTmdb = {
+      getShowDetails: jest.fn().mockResolvedValue({ id: 1, name: 'Mock Show', number_of_seasons: 1, status: 'Returning Series', first_air_date: '2020-01-01', genres: [], original_language: 'en', origin_country: ['US'] }),
+      getSeasonsBatch: jest.fn().mockResolvedValue({
+        'season/1': {
+          id: 1,
+          season_number: 1,
+          episodes: [{ id: 1, season_number: 1, episode_number: 1, name: 'Corrected Title', air_date: PAST.toISOString().slice(0, 10) }],
+        },
+      }),
+    } as unknown as TmdbClient;
+
+    const outcome = await refreshOneSeries({ prisma, tmdb: noNewEpisodesTmdb, userId: user.id, series: row, apply: true });
+
+    expect(outcome.kind).toBe('processed');
+    if (outcome.kind !== 'processed') throw new Error('unreachable');
+    expect(outcome.entry.episodesInserted).toBe(0);
+    expect(outcome.entry.fieldsChanged).toBe(1);
+    expect(outcome.entry.fieldsUpdated).toBe(1);
+
+    const correctedEpisode = await prisma.episode.findFirst({ where: { season: { seriesId: row.id }, episodeNumber: 1 } });
+    expect(correctedEpisode?.title).toBe('Corrected Title');
+  });
 });

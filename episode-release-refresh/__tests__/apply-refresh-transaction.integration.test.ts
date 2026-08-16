@@ -10,7 +10,7 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { PrismaClient, ReleaseStatus, Series, User, UserSeriesStatus } from '@prisma/client';
-import { applySeriesInsertPlan, PHASE1_APPLY_IMPORT_BATCH_ID } from '../apply-refresh-transaction';
+import { applySeriesInsertPlan, applyEpisodeFieldUpdatesForSeries, PHASE1_APPLY_IMPORT_BATCH_ID } from '../apply-refresh-transaction';
 import { EpisodeInsertPlan } from '../build-episode-insert-plan';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -404,5 +404,104 @@ describeIfDbConfigured('applySeriesInsertPlan (integration, real Postgres)', () 
     expect(seasons.find((s) => s.seasonNumber === 2)?.importBatchId).toBe(PHASE1_APPLY_IMPORT_BATCH_ID);
     expect(seasons.find((s) => s.seasonNumber === 1)?.importBatchId).toBeNull(); // pre-existing season untouched
     void season1;
+  });
+});
+
+// Real-Postgres proof for the 2026-08-16 field-update capability
+// (episode-field-update-writer.ts) — the previously-report-only
+// fieldChanges are now actually written. Its own describe block/fixtures
+// (not folded into the suite above) since it exercises a fully separate
+// write path (applyEpisodeFieldUpdatesForSeries, its own transaction) with
+// no insert plan involved at all.
+describeIfDbConfigured('applyEpisodeFieldUpdatesForSeries (integration, real Postgres)', () => {
+  const prisma = new PrismaClient();
+  const createdSeriesIds: string[] = [];
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  afterEach(async () => {
+    for (const seriesId of createdSeriesIds.splice(0)) {
+      await prisma.series.deleteMany({ where: { id: seriesId } });
+    }
+  });
+
+  async function createFixtureSeries(): Promise<Series> {
+    const series = await prisma.series.create({ data: { title: `Field Update Test Series ${randomUUID()}`, releaseStatus: ReleaseStatus.RETURNING } });
+    createdSeriesIds.push(series.id);
+    return series;
+  }
+
+  it('corrects a future episode\'s airDate that shifted since it was first inserted, without touching its identity or watch state', async () => {
+    const series = await createFixtureSeries();
+    const season1 = await prisma.season.create({ data: { seriesId: series.id, seasonNumber: 1 } });
+    const oldFutureDate = new Date(Date.now() + 7 * DAY_MS);
+    const shiftedFutureDate = new Date(Date.now() + 14 * DAY_MS);
+    const episode = await prisma.episode.create({
+      data: { seasonId: season1.id, episodeNumber: 5, title: 'Old Title', airDate: oldFutureDate, tmdbEpisodeId: 999001 },
+    });
+
+    const result = await applyEpisodeFieldUpdatesForSeries(prisma, [
+      {
+        episodeId: episode.id,
+        seasonNumber: 1,
+        episodeNumber: 5,
+        changedFields: ['title', 'airDate'],
+        newTitle: 'Confirmed Title',
+        newOverview: 'A real overview now',
+        newAirDate: shiftedFutureDate,
+        newImageUrl: null,
+        newRuntimeMinutes: null,
+      },
+    ]);
+
+    expect(result.episodesUpdated).toBe(1);
+    expect(result.skippedEpisodeIds).toEqual([]);
+
+    const updated = await prisma.episode.findUniqueOrThrow({ where: { id: episode.id } });
+    expect(updated.title).toBe('Confirmed Title');
+    expect(updated.overview).toBe('A real overview now');
+    expect(updated.airDate?.getTime()).toBe(shiftedFutureDate.getTime());
+    // Identity untouched by a metadata correction.
+    expect(updated.tmdbEpisodeId).toBe(999001);
+    expect(updated.id).toBe(episode.id);
+  });
+
+  it('skips a field change for an episode id that no longer exists, without throwing or affecting the others', async () => {
+    const series = await createFixtureSeries();
+    const season1 = await prisma.season.create({ data: { seriesId: series.id, seasonNumber: 1 } });
+    const realEpisode = await prisma.episode.create({ data: { seasonId: season1.id, episodeNumber: 1, title: 'Real', airDate: NEW_RELEASED } });
+
+    const result = await applyEpisodeFieldUpdatesForSeries(prisma, [
+      {
+        episodeId: randomUUID(), // never existed
+        seasonNumber: 1,
+        episodeNumber: 99,
+        changedFields: ['title'],
+        newTitle: 'Ghost',
+        newOverview: null,
+        newAirDate: null,
+        newImageUrl: null,
+        newRuntimeMinutes: null,
+      },
+      {
+        episodeId: realEpisode.id,
+        seasonNumber: 1,
+        episodeNumber: 1,
+        changedFields: ['title'],
+        newTitle: 'Real Updated',
+        newOverview: null,
+        newAirDate: NEW_RELEASED,
+        newImageUrl: null,
+        newRuntimeMinutes: null,
+      },
+    ]);
+
+    expect(result.episodesUpdated).toBe(1);
+    expect(result.skippedEpisodeIds).toEqual([expect.any(String)]);
+
+    const updated = await prisma.episode.findUniqueOrThrow({ where: { id: realEpisode.id } });
+    expect(updated.title).toBe('Real Updated');
   });
 });

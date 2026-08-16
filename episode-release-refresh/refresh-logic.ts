@@ -266,6 +266,19 @@ export interface EpisodeFieldChange {
   seasonNumber: number;
   episodeNumber: number;
   changedFields: string[];
+  // The provider's current value for every one of these fields (2026-08-16
+  // — previously this type carried only changedFields' names, for reporting
+  // only; see apply-refresh-transaction.ts/episode-field-update-writer.ts
+  // for why an apply step needs the actual values now, not just which
+  // fields differ). Always all five, not just the ones listed in
+  // changedFields — sending an unchanged field back as its own current
+  // value is a harmless no-op write, and it's simpler than building a
+  // partial payload.
+  newTitle: string | null;
+  newOverview: string | null;
+  newAirDate: Date | null;
+  newImageUrl: string | null;
+  newRuntimeMinutes: number | null;
 }
 
 export interface ReleaseStatusChange {
@@ -453,7 +466,17 @@ export function compareSeriesCatalog(input: CompareSeriesCatalogInput): CompareS
     if (fieldsDiffer(localEp.imageUrl, providerEp.imageUrl)) changedFields.push('imageUrl');
     if (fieldsDiffer(localEp.runtimeMinutes, providerEp.runtimeMinutes)) changedFields.push('runtimeMinutes');
     if (changedFields.length > 0) {
-      fieldChanges.push({ episodeId: localEp.id, seasonNumber: localEp.seasonNumber, episodeNumber: localEp.episodeNumber, changedFields });
+      fieldChanges.push({
+        episodeId: localEp.id,
+        seasonNumber: localEp.seasonNumber,
+        episodeNumber: localEp.episodeNumber,
+        changedFields,
+        newTitle: providerEp.title,
+        newOverview: providerEp.overview,
+        newAirDate: providerEp.airDate,
+        newImageUrl: providerEp.imageUrl,
+        newRuntimeMinutes: providerEp.runtimeMinutes,
+      });
     }
   }
 

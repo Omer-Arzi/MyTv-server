@@ -33,12 +33,15 @@ import { SeriesRefreshOrchestratorService } from '../sync/series-refresh-orchest
 
 // The tick itself just checks what's due — it is NOT the refresh interval.
 // The smart per-series interval (smart-scheduling-policy.ts) is still
-// enforced by isRefreshDue regardless of how often this fires; an hourly
-// tick is fine-grained enough that no series' interval (the shortest being
-// ~1h for an overdue known episode) is ever meaningfully delayed, without
-// re-querying the whole library too often. Configurable so this can be
-// tightened in tests or deployment without a code change.
-const DEFAULT_TICK_INTERVAL_MS = 60 * 60 * 1000;
+// enforced by isRefreshDue regardless of how often this fires. Widened from
+// hourly to twice a day (2026-08-16, user request) now that manual
+// single-series refresh covers the "I want this checked right now" case —
+// the shortest smart-scheduling tier (~1h for an overdue known episode)
+// will now be delayed by up to ~12h in the worst case rather than being
+// checked within the hour, a deliberate cost/freshness tradeoff, not an
+// oversight. Configurable so this can be tightened in tests or deployment
+// without a code change.
+const DEFAULT_TICK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 // Local release activation (Part 2B: "run this process frequently,
 // approximately once per hour") — a separate interval from the provider
 // tick above on purpose, even though they happen to share the same

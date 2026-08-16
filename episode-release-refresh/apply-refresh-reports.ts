@@ -64,6 +64,15 @@ export interface ApplyProcessedSeriesEntry {
   // write was attempted (a race since candidate selection). Distinct from
   // progressSkippedReason, which implies episodes WERE still inserted.
   writeSkippedReason: string | null;
+  // How many existing episodes compareSeriesCatalog found a metadata
+  // difference for (title/overview/airDate/imageUrl/runtimeMinutes) —
+  // always populated, dry-run or apply, same "planned vs actual" pattern as
+  // episodesPlanned/episodesInserted above (2026-08-16).
+  fieldsChanged: number;
+  // Actual DB write result — only non-zero in apply mode. Independent of
+  // episodesInserted/progressRecomputed: a series can have field updates
+  // with zero new episodes, or vice versa.
+  fieldsUpdated: number;
   warnings: string[];
 }
 
@@ -99,6 +108,7 @@ export interface ApplyRefreshReport {
     seasonsCreated: number;
     episodesInserted: number;
     duplicatesSkipped: number;
+    fieldsUpdated: number;
     seriesWithProgressRecomputed: number;
     seriesSkippedAtWriteTime: number;
     errorCount: number;
@@ -126,6 +136,7 @@ export function buildApplyRefreshReport(input: {
     seasonsCreated: input.processedSeries.reduce((sum, e) => sum + e.seasonsCreated.length, 0),
     episodesInserted: input.processedSeries.reduce((sum, e) => sum + e.episodesInserted, 0),
     duplicatesSkipped: input.processedSeries.reduce((sum, e) => sum + e.duplicatesSkipped, 0),
+    fieldsUpdated: input.processedSeries.reduce((sum, e) => sum + e.fieldsUpdated, 0),
     seriesWithProgressRecomputed: input.processedSeries.filter((e) => e.progressRecomputed).length,
     seriesSkippedAtWriteTime: input.processedSeries.filter((e) => e.writeSkippedReason !== null).length,
     errorCount: input.errors.length,
@@ -167,14 +178,17 @@ export function buildApplyRefreshMarkdownReport(report: ApplyRefreshReport): str
     if (o.message) lines.push(`- ${o.message}`);
     lines.push('');
   }
-  lines.push('Phase 1 scope: create missing Season rows and genuinely new, already-released Episode rows only. Never');
-  lines.push('updates/deletes an existing Episode, never touches EpisodeWatch, never applies metadata fieldChanges, never');
-  lines.push('writes Series.releaseStatus. UserSeriesProgress is recomputed only for a series where at least one episode');
-  lines.push('was actually inserted. A series whose proposed insert count is suspiciously large relative to its local');
-  lines.push('catalog (more than 10 released episodes, or more than half the local catalog for an already-established');
-  lines.push('series) is blocked entirely — see "Blocked — suspicious bulk insert" below. A series proposing any');
-  lines.push('released season-0 (specials) episode is also blocked entirely, since Phase 1 has no dedicated season-0');
-  lines.push('handling or tests — see "Blocked — season 0 proposed" below.');
+  lines.push('Phase 1 scope: create missing Season rows and genuinely new Episode rows — both released and not-yet-aired');
+  lines.push('(2026-08-16: previously released-only; a not-yet-aired episode now also gets inserted so the Upcoming');
+  lines.push('timeline can show it ahead of its air date). Also applies metadata field corrections (title/overview/');
+  lines.push('airDate/imageUrl/runtimeMinutes) to already-existing episodes the provider still agrees are the same slot —');
+  lines.push('never a season/episode renumbering, never touches identity or EpisodeWatch. Never deletes an existing');
+  lines.push('Episode, never writes Series.releaseStatus. UserSeriesProgress is recomputed only for a series where at');
+  lines.push('least one episode was actually inserted. A series whose proposed insert count is suspiciously large');
+  lines.push('relative to its local catalog (more than 10 released episodes, or more than half the local catalog for an');
+  lines.push('already-established series) is blocked entirely — see "Blocked — suspicious bulk insert" below. A series');
+  lines.push('proposing any released season-0 (specials) episode is also blocked entirely, since Phase 1 has no');
+  lines.push('dedicated season-0 handling or tests — see "Blocked — season 0 proposed" below.');
   lines.push('');
   lines.push('## Summary');
   lines.push('');
@@ -188,6 +202,7 @@ export function buildApplyRefreshMarkdownReport(report: ApplyRefreshReport): str
   lines.push(`- Seasons created: **${report.summary.seasonsCreated}**`);
   lines.push(`- Episodes inserted: **${report.summary.episodesInserted}**`);
   lines.push(`- Duplicate episodes skipped (already existed at write time): **${report.summary.duplicatesSkipped}**`);
+  lines.push(`- Episode fields updated (title/overview/airDate/imageUrl/runtimeMinutes corrections): **${report.summary.fieldsUpdated}**`);
   lines.push(`- Series with progress recomputed: **${report.summary.seriesWithProgressRecomputed}**`);
   lines.push(`- Series skipped at write time (live status raced since candidate selection): **${report.summary.seriesSkippedAtWriteTime}**`);
   lines.push(`- Errors: **${report.summary.errorCount}**`);
@@ -249,6 +264,9 @@ export function buildApplyRefreshMarkdownReport(report: ApplyRefreshReport): str
       lines.push(`- Local episode count: ${entry.localEpisodeCount} · Provider episode count: ${entry.providerEpisodeCount}`);
       lines.push(`- Seasons planned: ${entry.seasonsPlanned.length > 0 ? entry.seasonsPlanned.join(', ') : 'none'} · created: ${entry.seasonsCreated.length > 0 ? entry.seasonsCreated.join(', ') : 'none'}`);
       lines.push(`- Episodes planned: ${entry.episodesPlanned} · inserted: ${entry.episodesInserted} · duplicates skipped: ${entry.duplicatesSkipped}`);
+      if (entry.fieldsChanged > 0) {
+        lines.push(`- Fields changed on existing episodes: ${entry.fieldsChanged} · updated: ${entry.fieldsUpdated}`);
+      }
       if (entry.writeSkippedReason) {
         lines.push(`- **Write skipped:** ${entry.writeSkippedReason}`);
       } else if (entry.progressRecomputed && entry.progressChange) {

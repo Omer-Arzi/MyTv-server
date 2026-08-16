@@ -376,7 +376,19 @@ describe('compareSeriesCatalog', () => {
     const result = compareSeriesCatalog({ ...baseInput, localEpisodes, providerEpisodes });
 
     expect(result.classification).toBe('NO_CHANGE');
-    expect(result.fieldChanges).toEqual([{ episodeId: 'local-1-1', seasonNumber: 1, episodeNumber: 1, changedFields: ['title'] }]);
+    expect(result.fieldChanges).toEqual([
+      {
+        episodeId: 'local-1-1',
+        seasonNumber: 1,
+        episodeNumber: 1,
+        changedFields: ['title'],
+        newTitle: 'New Title',
+        newOverview: null,
+        newAirDate: PAST,
+        newImageUrl: null,
+        newRuntimeMinutes: null,
+      },
+    ]);
   });
 
   it('reports an airDate field change distinctly from a title change', () => {

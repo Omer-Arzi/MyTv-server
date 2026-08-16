@@ -20,7 +20,7 @@ import { getAppendedSeason, TmdbSeason } from '../tmdb-enrichment/tmdb-types';
 import { mapTmdbStatusToReleaseStatus } from '../tmdb-enrichment/release-status-mapping';
 import { checkSeriesEligibility, chunkArray, compareSeriesCatalog, LocalEpisodeInput, ProviderEpisodeInput } from './refresh-logic';
 import { buildEpisodeInsertPlan, previewEpisodeInsertCounts } from './build-episode-insert-plan';
-import { applySeriesInsertPlan } from './apply-refresh-transaction';
+import { applySeriesInsertPlan, applyEpisodeFieldUpdatesForSeries } from './apply-refresh-transaction';
 import { applyProgressReconciliation } from './apply-progress-reconciliation';
 import { reconcileSeriesProgress } from './progress-reconciliation-logic';
 import { OrderedEpisodeForNextLookup } from '../src/modules/series/series-query-helpers';
@@ -139,13 +139,16 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
 
     // Phase 4 of the episode-identity architecture work: only relevant when
     // this refresh would otherwise insert something (mirrors
-    // buildEpisodeInsertPlan's own classification gate below) — a series
+    // buildEpisodeInsertPlan's own classification gate below, which now
+    // also includes FUTURE_ONLY — 2026-08-16 — so a future episode outside
+    // every known SeriesNumberingMapping range still gets held for review
+    // instead of silently inserted under a guessed label) — a series
     // blocked for a different reason (RISKY_DO_NOT_APPLY,
     // NEEDS_MANUAL_REVIEW, ...) doesn't also get numbering-review noise
     // piled on top. A pass-through no-op for the ~all series with zero
     // SeriesNumberingMapping rows regardless of classification.
     const numbering =
-      comparison.classification === 'NEW_RELEASE_AVAILABLE'
+      comparison.classification === 'NEW_RELEASE_AVAILABLE' || comparison.classification === 'FUTURE_ONLY'
         ? resolveEpisodeNumbering({ newEpisodes: comparison.newEpisodes, providerEpisodes, mappings: series.numberingMappings })
         : { resolvedNewEpisodes: comparison.newEpisodes, resolvedProviderEpisodes: providerEpisodes, pending: [], warnings: [] as string[] };
 
@@ -169,6 +172,20 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
         ? [`${numbering.pending.length} new episode(s) held for numbering review (no SeriesNumberingMapping range covers them): ${numbering.pending.map((p) => `S${p.providerSeasonNumber}E${p.providerEpisodeNumber}`).join(', ')}`]
         : [];
 
+    // Metadata field corrections (title/overview/airDate/imageUrl/
+    // runtimeMinutes) on EXISTING episodes — unconditional on whether this
+    // refresh also inserts new episodes or recomputes progress below (its
+    // own separate transaction, see apply-refresh-transaction.ts's doc
+    // comment on why), so it's run here, once, regardless of which branch
+    // follows. RISKY_DO_NOT_APPLY/NEEDS_MANUAL_REVIEW/SUSPICIOUS_BULK_INSERT/
+    // SEASON_ZERO_PROPOSED are NOT special-cased here — compareSeriesCatalog
+    // only ever produces a fieldChange for a local episode the provider
+    // still agrees is the same (seasonNumber, episodeNumber) slot, so a
+    // plain metadata correction carries none of the risk those
+    // classifications exist to block (no identity change, no renumbering,
+    // no watch-history impact) and is safe to apply even for an otherwise-blocked series.
+    const fieldUpdateResult = apply && comparison.fieldChanges.length > 0 ? await applyEpisodeFieldUpdatesForSeries(prisma, comparison.fieldChanges) : null;
+
     const baseEntry = {
       seriesId: series.id,
       seriesTitle: series.title,
@@ -181,6 +198,8 @@ export async function refreshOneSeries(input: RefreshOneSeriesInput): Promise<Re
       bulkInsertReason: comparison.bulkInsertReason,
       seasonZeroReason: comparison.seasonZeroReason,
       warnings: [...comparison.warnings, ...numbering.warnings, ...pendingWarnings],
+      fieldsChanged: comparison.fieldChanges.length,
+      fieldsUpdated: fieldUpdateResult?.episodesUpdated ?? 0,
     };
 
     if (insertPlan.episodesToInsert.length === 0) {
