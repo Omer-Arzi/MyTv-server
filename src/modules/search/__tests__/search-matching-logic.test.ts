@@ -45,7 +45,7 @@ describe('matchCandidateAgainstLibrary', () => {
   it('flags EXACT + needsAttention when the confirmed series is on the known risk list, even with a strong id match', () => {
     const result = matchCandidateAgainstLibrary(
       candidate({ providerId: '100' }),
-      [libraryEntry({ title: 'One Piece', tmdbId: '100', hasConfirmedProviderMatch: true })],
+      [libraryEntry({ title: 'Rurouni Kenshin', tmdbId: '100', hasConfirmedProviderMatch: true })],
     );
     expect(result).toMatchObject({ type: 'EXACT', needsAttention: true });
   });

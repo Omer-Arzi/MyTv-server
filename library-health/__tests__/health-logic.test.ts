@@ -135,7 +135,7 @@ describe('classifySeriesHealth — provider structure risk', () => {
   });
 
   it('takes priority over a missing provider match', () => {
-    const result = classifySeriesHealth(baseInput({ title: 'One Piece', externalIds: null, progress: activeProgress }));
+    const result = classifySeriesHealth(baseInput({ title: 'Rurouni Kenshin', externalIds: null, progress: activeProgress }));
     expect(result.classification).toBe('PROVIDER_STRUCTURE_RISK');
   });
 });

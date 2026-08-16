@@ -21,7 +21,20 @@ export const DEFAULT_STALE_AFTER_DAYS = 90;
 // 1" == their real last-watched episode) against TMDb's live catalog. The
 // distrust this list exists for has been directly resolved for this title,
 // not just assumed away.
-export const EPISODE_NUMBERING_RISK_LIST_TITLES: string[] = ['Rurouni Kenshin', 'One Piece', 'ONE PIECE (2023)', 'InuYasha', "InuYasha: The Final Act"];
+//
+// 'One Piece' (the long-running anime, tmdbId 37854 — NOT 'ONE PIECE
+// (2023)', the separate live-action entry, which stays listed) removed
+// 2026-08-16, same standard as JJK above: this title was originally listed
+// because a *title-search* candidate lookup could resolve to the wrong
+// TMDb entry, but this series was already correctly matched to 37854
+// beforehand and refreshes by that known id, never by re-searching the
+// title — so that risk never actually applied to it. Confirmed by direct
+// cross-check against TMDb's live catalog: episode 1169, "The Legend
+// Lurking in Elbaph," the user's real last-watched episode, matches
+// exactly (title + 2026-07-12 air date) against TMDb's season 23 episode
+// 1169. The block had been silently freezing this series' catalog at 1169
+// while TMDb had already moved on to 1174.
+export const EPISODE_NUMBERING_RISK_LIST_TITLES: string[] = ['Rurouni Kenshin', 'ONE PIECE (2023)', 'InuYasha', "InuYasha: The Final Act"];
 
 // Confirmed via stale-series-audit/output/stale-series-accuracy-report.json's
 // POSSIBLE_SEASON_SHIFT category (2026-07-05): a targeted single-series
