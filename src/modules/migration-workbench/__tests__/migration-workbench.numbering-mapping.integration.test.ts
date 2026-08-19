@@ -49,11 +49,16 @@ describeIfDbConfigured('MigrationWorkbenchService.createNumberingMapping / listP
     const user = await createFixtureUser();
     const series = await createFixtureSeries();
 
+    // Fake, negative tmdbEpisodeId — real TMDb ids are always positive, so
+    // this can never collide with a real Episode row already present in a
+    // populated dev database (a hardcoded positive id here once collided
+    // with a real Re:Zero episode and made this test silently insert zero
+    // rows via skipDuplicates instead of failing loudly).
     await prisma.pendingProviderEpisode.create({
-      data: { seriesId: series.id, tmdbEpisodeId: 7130159, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79', airDate: new Date('2026-08-19') },
+      data: { seriesId: series.id, tmdbEpisodeId: -7130159, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79', airDate: new Date('2026-08-19') },
     });
     // Not covered by the mapping below — must stay pending.
-    await prisma.pendingProviderEpisode.create({ data: { seriesId: series.id, tmdbEpisodeId: 999, providerSeasonNumber: 2, providerEpisodeNumber: 1, title: 'Unrelated' } });
+    await prisma.pendingProviderEpisode.create({ data: { seriesId: series.id, tmdbEpisodeId: -999, providerSeasonNumber: 2, providerEpisodeNumber: 1, title: 'Unrelated' } });
 
     const result = await service.createNumberingMapping(user.id, series.id, {
       providerSeasonNumber: 1,
@@ -71,11 +76,11 @@ describeIfDbConfigured('MigrationWorkbenchService.createNumberingMapping / listP
 
     const newSeason = await prisma.season.findFirstOrThrow({ where: { seriesId: series.id, seasonNumber: 5 }, include: { episodes: true } });
     expect(newSeason.episodes).toHaveLength(1);
-    expect(newSeason.episodes[0]).toMatchObject({ episodeNumber: 1, title: 'Episode 79', tmdbEpisodeId: 7130159 });
+    expect(newSeason.episodes[0]).toMatchObject({ episodeNumber: 1, title: 'Episode 79', tmdbEpisodeId: -7130159 });
 
     const remainingPending = await prisma.pendingProviderEpisode.findMany({ where: { seriesId: series.id } });
     expect(remainingPending).toHaveLength(1);
-    expect(remainingPending[0].tmdbEpisodeId).toBe(999);
+    expect(remainingPending[0].tmdbEpisodeId).toBe(-999);
   });
 
   it('creates the mapping with zero promotions when no pending episode is covered', async () => {
@@ -93,12 +98,12 @@ describeIfDbConfigured('MigrationWorkbenchService.createNumberingMapping / listP
 
   it('lists pending episodes across series, including the series title', async () => {
     const series = await createFixtureSeries();
-    await prisma.pendingProviderEpisode.create({ data: { seriesId: series.id, tmdbEpisodeId: 12345, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79' } });
+    await prisma.pendingProviderEpisode.create({ data: { seriesId: series.id, tmdbEpisodeId: -12345, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79' } });
 
     const result = await service.listPendingEpisodes();
 
     const entry = result.find((r) => r.seriesId === series.id);
-    expect(entry).toMatchObject({ seriesTitle: series.title, tmdbEpisodeId: 12345, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79' });
+    expect(entry).toMatchObject({ seriesTitle: series.title, tmdbEpisodeId: -12345, providerSeasonNumber: 1, providerEpisodeNumber: 79, title: 'Episode 79' });
   });
 
   it('throws NotFoundException for a series that does not exist', async () => {

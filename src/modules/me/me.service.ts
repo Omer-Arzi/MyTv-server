@@ -108,11 +108,15 @@ export class MeService {
       orderBy: { lastWatchedAt: 'desc' },
       include: {
         series: true,
-        nextEpisode: { include: { season: true } },
+        nextEpisode: { include: { season: { include: { episodes: { orderBy: { episodeNumber: 'asc' }, take: 1, select: { airDate: true } } } } } },
       },
     });
 
-    const candidates = filterNonStaleWatchNextCandidates(progress, staleCutoff);
+    const candidatesWithSeasonStart = progress.map((p) => ({
+      ...p,
+      currentSeasonStartDate: p.nextEpisode?.season.episodes[0]?.airDate ?? null,
+    }));
+    const candidates = filterNonStaleWatchNextCandidates(candidatesWithSeasonStart, staleCutoff);
     const remainingEpisodesAfterNextBySeriesId = await this.getRemainingEpisodesAfterNextBySeriesId(userId, candidates);
 
     return candidates.map((p) => ({
@@ -178,6 +182,13 @@ export class MeService {
   async getStaleSeries(userId: string, afterDays: number): Promise<StaleSeriesItemDto[]> {
     const cutoff = new Date(Date.now() - afterDays * 24 * 60 * 60 * 1000);
 
+    // Note: the lastWatchedAt < cutoff DB filter is a broad pre-filter only —
+    // isTrustedStaleCandidate (via computeStaleReferenceDate) is the real
+    // eligibility check and may still exclude a row this query returns (e.g.
+    // a new season started after lastWatchedAt but before cutoff, so the
+    // series belongs in Watch Next instead). It can never wrongly EXCLUDE a
+    // row that should qualify, since the reference date used downstream is
+    // never earlier than lastWatchedAt.
     const progress = await this.prisma.userSeriesProgress.findMany({
       where: {
         userId,
@@ -188,11 +199,16 @@ export class MeService {
       orderBy: { lastWatchedAt: 'asc' },
       include: {
         series: true,
-        nextEpisode: { include: { season: true } },
+        nextEpisode: { include: { season: { include: { episodes: { orderBy: { episodeNumber: 'asc' }, take: 1, select: { airDate: true } } } } } },
       },
     });
 
-    return filterTrustedStaleCandidates(progress, cutoff).map((p) => ({
+    const candidatesWithSeasonStart = progress.map((p) => ({
+      ...p,
+      currentSeasonStartDate: p.nextEpisode?.season.episodes[0]?.airDate ?? null,
+    }));
+
+    return filterTrustedStaleCandidates(candidatesWithSeasonStart, cutoff).map((p) => ({
       series: toSeriesSummary(p.series),
       lastWatchedAt: p.lastWatchedAt,
       nextEpisode: toEpisodeSummary(p.nextEpisode),

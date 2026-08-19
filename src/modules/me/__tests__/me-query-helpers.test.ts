@@ -1,6 +1,7 @@
 import { UserSeriesStatus } from '@prisma/client';
 import {
   computeRemainingEpisodesAfterNext,
+  computeStaleReferenceDate,
   deriveHavenStartedYetCandidates,
   filterNonStaleWatchNextCandidates,
   filterReleasedNextEpisodes,
@@ -41,13 +42,14 @@ interface FakeStaleCandidate extends StaleCandidateProgress {
 
 function staleCandidate(
   id: string,
-  overrides: Partial<Pick<FakeStaleCandidate, 'userStatus' | 'lastWatchedAt' | 'nextEpisode'>> & { title?: string } = {},
+  overrides: Partial<Pick<FakeStaleCandidate, 'userStatus' | 'lastWatchedAt' | 'nextEpisode' | 'currentSeasonStartDate'>> & { title?: string } = {},
 ): FakeStaleCandidate {
   return {
     id,
     userStatus: overrides.userStatus ?? UserSeriesStatus.WATCHING,
     lastWatchedAt: overrides.lastWatchedAt !== undefined ? overrides.lastWatchedAt : OLD_LAST_WATCHED,
     nextEpisode: overrides.nextEpisode !== undefined ? overrides.nextEpisode : { airDate: PAST },
+    currentSeasonStartDate: overrides.currentSeasonStartDate !== undefined ? overrides.currentSeasonStartDate : null,
     series: { title: overrides.title ?? 'The Bear' },
   };
 }
@@ -87,6 +89,23 @@ describe('filterReleasedNextEpisodes', () => {
     const now = new Date('2026-07-04T00:00:00.000Z');
     const result = filterReleasedNextEpisodes([progress('a', now)], now);
     expect(result.map((p) => p.id)).toEqual(['a']);
+  });
+});
+
+describe('computeStaleReferenceDate', () => {
+  it('returns lastWatchedAt unchanged when there is no season start date', () => {
+    expect(computeStaleReferenceDate(OLD_LAST_WATCHED, null)).toEqual(OLD_LAST_WATCHED);
+    expect(computeStaleReferenceDate(OLD_LAST_WATCHED, undefined)).toEqual(OLD_LAST_WATCHED);
+  });
+
+  it('returns lastWatchedAt unchanged when the season started before lastWatchedAt', () => {
+    const seasonStart = new Date(OLD_LAST_WATCHED.getTime() - 24 * 60 * 60 * 1000);
+    expect(computeStaleReferenceDate(OLD_LAST_WATCHED, seasonStart)).toEqual(OLD_LAST_WATCHED);
+  });
+
+  it('returns the season start date when it is more recent than lastWatchedAt', () => {
+    const seasonStart = new Date(OLD_LAST_WATCHED.getTime() + 24 * 60 * 60 * 1000);
+    expect(computeStaleReferenceDate(OLD_LAST_WATCHED, seasonStart)).toEqual(seasonStart);
   });
 });
 
@@ -170,6 +189,20 @@ describe('isTrustedStaleCandidate / filterTrustedStaleCandidates', () => {
       NOW,
     );
     expect(result.map((p) => p.id)).toEqual(['eligible']);
+  });
+
+  // A show finished long ago, then gets a new season: the clock should
+  // restart from the new season's premiere instead of the ancient
+  // lastWatchedAt, so it doesn't immediately count as "stale."
+  it('excludes a series with an ancient lastWatchedAt when its current season started within the cutoff window', () => {
+    const candidate = staleCandidate('a', { currentSeasonStartDate: RECENT_LAST_WATCHED });
+    expect(isTrustedStaleCandidate(candidate, NINETY_DAY_CUTOFF, NOW)).toBe(false);
+  });
+
+  it('includes a series whose new season itself started before the cutoff (the clock restarted, but enough time has now passed)', () => {
+    const seasonStartOverCutoffAgo = new Date(NINETY_DAY_CUTOFF.getTime() - 24 * 60 * 60 * 1000);
+    const candidate = staleCandidate('a', { currentSeasonStartDate: seasonStartOverCutoffAgo });
+    expect(isTrustedStaleCandidate(candidate, NINETY_DAY_CUTOFF, NOW)).toBe(true);
   });
 });
 
@@ -255,6 +288,16 @@ describe('filterNonStaleWatchNextCandidates', () => {
     expect(watchNextIds).toEqual(['fresh']);
     expect(staleIds).toEqual(['stale']);
     expect(watchNextIds.filter((id) => staleIds.includes(id))).toEqual([]);
+  });
+
+  it('a show with an ancient lastWatchedAt lands in Watch Next, not stale-series, once a new season has started within the cutoff window', () => {
+    const candidate = staleCandidate('a', { currentSeasonStartDate: RECENT_LAST_WATCHED });
+
+    const watchNextIds = filterNonStaleWatchNextCandidates([candidate], NINETY_DAY_CUTOFF, NOW).map((p) => p.id);
+    const staleIds = filterTrustedStaleCandidates([candidate], NINETY_DAY_CUTOFF, NOW).map((p) => p.id);
+
+    expect(watchNextIds).toEqual(['a']);
+    expect(staleIds).toEqual([]);
   });
 });
 

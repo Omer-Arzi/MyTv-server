@@ -42,6 +42,25 @@ export function filterReleasedNextEpisodes<T extends ProgressWithNextEpisode>(
 export interface StaleCandidateProgress extends ProgressWithNextEpisode, ProgressWithSeriesTitle {
   userStatus: UserSeriesStatus;
   lastWatchedAt: Date | null;
+  // The premiere airDate of the season nextEpisode belongs to (earliest
+  // episodeNumber in that season) — null when unknown/unavailable. Lets a
+  // new season "re-arm" the staleness clock: see computeStaleReferenceDate.
+  currentSeasonStartDate?: Date | null;
+}
+
+// A show finished long ago (old lastWatchedAt) that then gets a brand-new
+// season should re-appear in Watch Next, not jump straight to "haven't
+// watched for a while" — the user was never given the chance to fall behind
+// on content that didn't exist yet. The staleness clock instead starts
+// counting from the new season's premiere date. Whichever is more recent —
+// the last time the user actually watched, or the start of the season
+// nextEpisode belongs to — is what "how long has this been sitting
+// unwatched" should be measured against. When no new season has started
+// since lastWatchedAt (the common case — mid-backlog, or no season data),
+// this is just lastWatchedAt unchanged, so existing behavior is preserved.
+export function computeStaleReferenceDate(lastWatchedAt: Date, currentSeasonStartDate: Date | null | undefined): Date {
+  if (currentSeasonStartDate && currentSeasonStartDate > lastWatchedAt) return currentSeasonStartDate;
+  return lastWatchedAt;
 }
 
 // GET /me/stale-series' full eligibility check — see
@@ -54,13 +73,17 @@ export interface StaleCandidateProgress extends ProgressWithNextEpisode, Progres
 // (userStatus = WATCHING, a real released nextEpisodeId, not on the known
 // episode-numbering/season-shift risk list — see
 // src/common/stale-series-trust.ts) plus this section's own point: it's
-// actually been a while. Written as a single predicate — rather than
-// relying solely on the DB query's WHERE clause — so the endpoint's contract
-// holds regardless of how a row got into the table, same defense-in-depth
-// rationale as filterReleasedNextEpisodes above.
+// actually been a while, measured from computeStaleReferenceDate rather than
+// raw lastWatchedAt (see that function's comment — a new season resets the
+// clock). Written as a single predicate — rather than relying solely on the
+// DB query's WHERE clause — so the endpoint's contract holds regardless of
+// how a row got into the table, same defense-in-depth rationale as
+// filterReleasedNextEpisodes above.
 export function isTrustedStaleCandidate<T extends StaleCandidateProgress>(progress: T, cutoff: Date, now: Date = new Date()): boolean {
   if (progress.userStatus !== UserSeriesStatus.WATCHING) return false;
-  if (!progress.lastWatchedAt || progress.lastWatchedAt >= cutoff) return false;
+  if (!progress.lastWatchedAt) return false;
+  const referenceDate = computeStaleReferenceDate(progress.lastWatchedAt, progress.currentSeasonStartDate);
+  if (referenceDate >= cutoff) return false;
   if (!progress.nextEpisode || !isEpisodeReleased(progress.nextEpisode.airDate, now)) return false;
   if (isUntrustedNextEpisodeTitle(progress.series.title)) return false;
   return true;
